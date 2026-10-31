@@ -1,4 +1,4 @@
-﻿using Blasphemous.ModdingAPI;
+using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Client.Players;
 using Blasphemous.Multiplayer.Client.ProgressSync;
 using Blasphemous.Multiplayer.Client.PvP.Models;
@@ -150,6 +150,7 @@ namespace Blasphemous.Multiplayer.Client.Network
                         case NetworkType.Attack: ReceiveAttack(messageData); break;
                         case NetworkType.Effect: ReceiveEffect(messageData); break;
                         case NetworkType.Ping: ReceivePing(messageData); break;
+                        case NetworkType.EnemyHealth: ReceiveEnemyHealth(messageData); break;
                     }
                     startIdx += 3 + length;
                 }
@@ -433,6 +434,34 @@ namespace Blasphemous.Multiplayer.Client.Network
             Main.Multiplayer.AttackManager.ReceiveAttack(attackerName, receiverName, attackType, damageAmount);
         }
 
+        // Enemy health (Level 1 enemy synchronization)
+
+        public void SendEnemyHealth(string enemyKey, float health)
+        {
+            if (string.IsNullOrEmpty(enemyKey)) return;
+
+            byte[] keyBytes = Encoding.UTF8.GetBytes(enemyKey);
+            if (keyBytes.Length > ushort.MaxValue) return;
+
+            List<byte> bytes = new();
+            bytes.AddRange(BitConverter.GetBytes((ushort)keyBytes.Length));
+            bytes.AddRange(keyBytes);
+            bytes.AddRange(BitConverter.GetBytes(health));
+            QueueMesssage(bytes.ToArray(), NetworkType.EnemyHealth);
+        }
+
+        private void ReceiveEnemyHealth(byte[] data)
+        {
+            if (data == null || data.Length < 6) return;
+
+            ushort keyLength = BitConverter.ToUInt16(data, 0);
+            if (data.Length != keyLength + 6) return;
+
+            string enemyKey = Encoding.UTF8.GetString(data, 2, keyLength);
+            float health = BitConverter.ToSingle(data, 2 + keyLength);
+            Main.Multiplayer.EnemySyncManager.ReceiveEnemyHealth(enemyKey, health);
+        }
+
         // Effect
 
         public void SendEffect(EffectType effectType)
@@ -481,6 +510,6 @@ namespace Blasphemous.Multiplayer.Client.Network
         public delegate void ConnectDelegate(bool success, RefusalType refusal);
         public event ConnectDelegate OnConnect;
 
-        private const byte PROTOCOL_VERSION = 3;
+        private const byte PROTOCOL_VERSION = 4;
     }
 }

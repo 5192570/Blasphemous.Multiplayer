@@ -1,4 +1,4 @@
-﻿using Blasphemous.CheatConsole;
+using Blasphemous.CheatConsole;
 using Blasphemous.ModdingAPI;
 using Blasphemous.ModdingAPI.Helpers;
 using Blasphemous.ModdingAPI.Persistence;
@@ -34,6 +34,7 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
     public ProgressManager ProgressManager { get; private set; }
     public DamageCalculator DamageCalculator { get; private set; }
     public PingManager PingManager { get; private set; }
+    public EnemySyncManager EnemySyncManager { get; private set; }
 
     // Game status
     public bool RandomizerMode => ModHelper.IsModLoadedByName("Randomizer");
@@ -68,6 +69,7 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         ProgressManager = new ProgressManager();
         DamageCalculator = new DamageCalculator();
         PingManager = new PingManager();
+        EnemySyncManager = new EnemySyncManager();
 
         NetworkManager.OnConnect += OnConnect;
 

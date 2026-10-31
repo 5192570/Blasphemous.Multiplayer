@@ -1,4 +1,4 @@
-﻿using Blasphemous.Multiplayer.Common.Enums;
+using Blasphemous.Multiplayer.Common.Enums;
 using Blasphemous.Multiplayer.Server.Models;
 using SimpleTCP;
 using System;
@@ -110,6 +110,7 @@ public class Server
                 case NetworkType.Attack:        receivePlayerAttack(e.ip, data); break;
                 case NetworkType.Effect:        receivePlayerEffect(e.ip, data); break;
                 case NetworkType.Ping:          ReceivePing(e.ip, data); break;
+                case NetworkType.EnemyHealth:  receivePlayerEnemyHealth(e.ip, data); break;
                 default:
                     Logger.Error($"Data type '{type}' is not valid"); break;
             }
@@ -657,6 +658,38 @@ public class Server
         return bytes.ToArray();
     }
 
+    // Enemy health (Level 1 enemy synchronization)
+
+    private void sendPlayerEnemyHealth(string playerIp, byte[] healthData)
+    {
+        PlayerInfo current = getCurrentPlayer(playerIp);
+        if (current == null) return;
+
+        foreach (string ip in connectedPlayers.Keys)
+        {
+            if (playerIp != ip && current.isInSameScene(connectedPlayers[ip]))
+                Send(ip, healthData, NetworkType.EnemyHealth);
+        }
+    }
+
+    private void receivePlayerEnemyHealth(string playerIp, byte[] data)
+    {
+        if (data == null || data.Length < 6)
+        {
+            Logger.Error("Received invalid enemy health packet");
+            return;
+        }
+
+        ushort keyLength = BitConverter.ToUInt16(data, 0);
+        if (data.Length != keyLength + 6)
+        {
+            Logger.Error("Received malformed enemy health packet");
+            return;
+        }
+
+        sendPlayerEnemyHealth(playerIp, data);
+    }
+
     // Effect
 
     private void sendPlayerEffect(string playerIp, byte effect)
@@ -718,5 +751,5 @@ public class Server
         SendPing(playerIp, time);
     }
 
-    private const byte PROTOCOL_VERSION = 3;
+    private const byte PROTOCOL_VERSION = 4;
 }

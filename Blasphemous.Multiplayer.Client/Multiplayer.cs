@@ -1,4 +1,4 @@
-﻿using Blasphemous.CheatConsole;
+using Blasphemous.CheatConsole;
 using Blasphemous.ModdingAPI;
 using Blasphemous.ModdingAPI.Helpers;
 using Blasphemous.ModdingAPI.Persistence;
@@ -90,6 +90,7 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
 
     public void OnDisconnect()
     {
+        EnemyDeathSyncManager.ResetSession();
         NotificationManager.DisplayNotification(LocalizationHandler.Localize("dcon"));
         ProgressManager.ResetProgressSentStatus();
         OtherPlayerManager.RemoveAllConnectedPlayers();

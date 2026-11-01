@@ -3,6 +3,7 @@ using Blasphemous.Multiplayer.Server.Models;
 using SimpleTCP;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Text;
 
 namespace Blasphemous.Multiplayer.Server;
@@ -111,6 +112,7 @@ public class Server
                 case NetworkType.Effect:        receivePlayerEffect(e.ip, data); break;
                 case NetworkType.Ping:          ReceivePing(e.ip, data); break;
                 case NetworkType.WorldReset:   receivePlayerWorldReset(e.ip, data); break;
+                case NetworkType.EnemyDeath:   receivePlayerEnemyDeath(e.ip, data); break;
                 default:
                     Logger.Error($"Data type '{type}' is not valid"); break;
             }
@@ -746,5 +748,41 @@ public class Server
         SendPing(playerIp, time);
     }
 
-    private const byte PROTOCOL_VERSION = 4;
+    // Shared enemy death
+
+    private void receivePlayerEnemyDeath(string playerIp, byte[] data)
+    {
+        if (data == null || data.Length == 0)
+            return;
+
+        try
+        {
+            string sceneName;
+            using (MemoryStream stream = new MemoryStream(data))
+            using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
+            {
+                sceneName = reader.ReadString();
+                string spawnPointId = reader.ReadString();
+                int generation = reader.ReadInt32();
+                if (stream.Position != stream.Length || string.IsNullOrEmpty(spawnPointId) || generation < 0)
+                    return;
+            }
+
+            PlayerInfo current = getCurrentPlayer(playerIp);
+            if (current == null || string.IsNullOrEmpty(sceneName) || current.sceneName != sceneName)
+                return;
+
+            foreach (string ip in connectedPlayers.Keys)
+            {
+                if (playerIp != ip && current.isInSameScene(connectedPlayers[ip]) && connectedPlayers[ip].sceneName == sceneName)
+                    Send(ip, data, NetworkType.EnemyDeath);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Ignored malformed enemy death packet: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private const byte PROTOCOL_VERSION = 5;
 }

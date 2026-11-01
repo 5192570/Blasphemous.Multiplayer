@@ -111,6 +111,7 @@ public class Server
                 case NetworkType.Effect:        receivePlayerEffect(e.ip, data); break;
                 case NetworkType.Ping:          ReceivePing(e.ip, data); break;
                 case NetworkType.EnemyHealth:  receivePlayerEnemyHealth(e.ip, data); break;
+                case NetworkType.WorldReset:   receivePlayerWorldReset(e.ip, data); break;
                 default:
                     Logger.Error($"Data type '{type}' is not valid"); break;
             }
@@ -690,6 +691,33 @@ public class Server
         sendPlayerEnemyHealth(playerIp, data);
     }
 
+    // Shared Prie Dieu enemy respawn
+
+    private void receivePlayerWorldReset(string playerIp, byte[] data)
+    {
+        if (data == null || data.Length == 0)
+        {
+            Logger.Warn("Received invalid world reset packet");
+            return;
+        }
+
+        PlayerInfo current = getCurrentPlayer(playerIp);
+        string sceneName = Encoding.UTF8.GetString(data);
+
+        // Only accept a reset for the sender's current scene.
+        if (current == null || string.IsNullOrEmpty(sceneName) || current.sceneName != sceneName)
+        {
+            Logger.Warn("Rejected world reset from invalid scene");
+            return;
+        }
+
+        foreach (string ip in connectedPlayers.Keys)
+        {
+            if (playerIp != ip && current.isInSameScene(connectedPlayers[ip]) && connectedPlayers[ip].sceneName == sceneName)
+                Send(ip, data, NetworkType.WorldReset);
+        }
+    }
+
     // Effect
 
     private void sendPlayerEffect(string playerIp, byte effect)
@@ -751,5 +779,5 @@ public class Server
         SendPing(playerIp, time);
     }
 
-    private const byte PROTOCOL_VERSION = 4;
+    private const byte PROTOCOL_VERSION = 5;
 }

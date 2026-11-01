@@ -151,6 +151,7 @@ namespace Blasphemous.Multiplayer.Client.Network
                         case NetworkType.Effect: ReceiveEffect(messageData); break;
                         case NetworkType.Ping: ReceivePing(messageData); break;
                         case NetworkType.EnemyHealth: ReceiveEnemyHealth(messageData); break;
+                        case NetworkType.WorldReset: ReceiveWorldReset(messageData); break;
                     }
                     startIdx += 3 + length;
                 }
@@ -462,6 +463,29 @@ namespace Blasphemous.Multiplayer.Client.Network
             Main.Multiplayer.EnemySyncManager.ReceiveEnemyHealth(enemyKey, health);
         }
 
+        // Shared Prie Dieu enemy respawn
+
+        public void SendWorldReset()
+        {
+            if (!IsConnected || Core.LevelManager.currentLevel == null) return;
+
+            string sceneName = Core.LevelManager.currentLevel.LevelName;
+            if (string.IsNullOrEmpty(sceneName)) return;
+
+            QueueMesssage(Encoding.UTF8.GetBytes(sceneName), NetworkType.WorldReset);
+        }
+
+        private void ReceiveWorldReset(byte[] data)
+        {
+            if (data == null || data.Length == 0) return;
+
+            string sceneName = Encoding.UTF8.GetString(data);
+            if (Core.LevelManager.currentLevel == null || Core.LevelManager.currentLevel.LevelName != sceneName)
+                return;
+
+            WorldResetManager.ApplyRemoteReset(sceneName);
+        }
+
         // Effect
 
         public void SendEffect(EffectType effectType)
@@ -510,6 +534,6 @@ namespace Blasphemous.Multiplayer.Client.Network
         public delegate void ConnectDelegate(bool success, RefusalType refusal);
         public event ConnectDelegate OnConnect;
 
-        private const byte PROTOCOL_VERSION = 4;
+        private const byte PROTOCOL_VERSION = 5;
     }
 }

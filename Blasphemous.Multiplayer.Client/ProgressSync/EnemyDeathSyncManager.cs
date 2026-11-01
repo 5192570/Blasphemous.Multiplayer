@@ -94,7 +94,29 @@ public static class EnemyDeathSyncManager
             applyingRemoteDeath = true;
             try
             {
+                // Preserve the game's native death callbacks so the spawn point is marked consumed.
                 enemy.SetHealth(0f);
+
+                // Remote SetHealth bypasses EnemyDamageArea.TakeDamage's collider cleanup.
+                // Disable every damage area and deactivate the enemy so it cannot keep
+                // animating, tracking players, colliding, or being hit again on this client.
+                EnemyDamageArea[] damageAreas = enemy.GetComponentsInChildren<EnemyDamageArea>(true);
+                int disabledColliders = 0;
+                foreach (EnemyDamageArea damageArea in damageAreas)
+                {
+                    if (damageArea == null)
+                        continue;
+
+                    Collider2D damageCollider = damageArea.DamageAreaCollider;
+                    if (damageCollider != null && damageCollider.enabled)
+                    {
+                        damageCollider.enabled = false;
+                        disabledColliders++;
+                    }
+                }
+
+                enemy.gameObject.SetActive(false);
+                ModLog.Info($"[EnemyDeathSync] Remote cleanup disabledColliders={disabledColliders}, enemyDeactivated=true");
             }
             finally
             {

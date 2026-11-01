@@ -75,7 +75,9 @@ namespace Blasphemous.Multiplayer.Client
         }
     }
 
-    [HarmonyPatch(typeof(EnemySpawner), "IsSpawnerConsumed")]
+    // EnemySpawner has two overloads: IsSpawnerConsumed(string) and
+    // IsSpawnerConsumed(EnemySpawnPoint). Explicitly select the latter.
+    [HarmonyPatch(typeof(EnemySpawner), "IsSpawnerConsumed", new Type[] { typeof(EnemySpawnPoint) })]
     internal static class EnemySpawnerIsSpawnerConsumedDiagnostics_Patch
     {
         [HarmonyPostfix]

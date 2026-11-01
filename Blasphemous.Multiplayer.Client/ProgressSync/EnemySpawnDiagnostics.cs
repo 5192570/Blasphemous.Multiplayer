@@ -1,3 +1,7 @@
+using System;
+using System.Collections;
+using System.Reflection;
+using System.Text;
 using Blasphemous.ModdingAPI;
 using Gameplay.GameControllers.Enemies.Framework.IA;
 using HarmonyLib;
@@ -58,19 +62,45 @@ namespace Blasphemous.Multiplayer.Client
         }
     }
 
+    [HarmonyPatch(typeof(EnemySpawnPoint), "CreateEnemy")]
+    internal static class EnemySpawnPointConsumedCheckDiagnostics_Patch
+    {
+        [HarmonyPostfix]
+        private static void Postfix(EnemySpawnPoint __instance)
+        {
+            // The IsSpawnerConsumed postfix below records the actual return value.
+            // This extra marker makes it easier to find the check among CreateEnemy logs.
+            if (__instance != null)
+            {
+                ModLog.Info($"[EnemySpawnDiagnostics] CreateEnemy:consumption-check-completed position={__instance.transform.position}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(EnemySpawner), "IsSpawnerConsumed")]
+    internal static class EnemySpawnerIsSpawnerConsumedDiagnostics_Patch
+    {
+        [HarmonyPostfix]
+        private static void Postfix(EnemySpawnPoint __0, bool __result)
+        {
+            string position = __0 == null ? "[null]" : __0.transform.position.ToString();
+            ModLog.Info($"[EnemySpawnDiagnostics] IsSpawnerConsumed:result position={position}, result={__result}");
+        }
+    }
+
     [HarmonyPatch(typeof(EnemySpawner), "RespawnDeadEnemies")]
     internal static class EnemySpawnerRespawnDiagnostics_Patch
     {
         [HarmonyPrefix]
-        private static void Prefix()
+        private static void Prefix(EnemySpawner __instance)
         {
-            ModLog.Info("[EnemySpawnDiagnostics] RespawnDeadEnemies:before");
+            EnemySpawnDiagnostics.LogConsumedSpawns("RespawnDeadEnemies:before", __instance);
         }
 
         [HarmonyPostfix]
-        private static void Postfix()
+        private static void Postfix(EnemySpawner __instance)
         {
-            ModLog.Info("[EnemySpawnDiagnostics] RespawnDeadEnemies:after");
+            EnemySpawnDiagnostics.LogConsumedSpawns("RespawnDeadEnemies:after", __instance);
         }
     }
 
@@ -89,7 +119,6 @@ namespace Blasphemous.Multiplayer.Client
             string enemyState = enemy == null
                 ? "none"
                 : $"name={enemy.name}, instanceId={enemy.gameObject.GetInstanceID()}, spawningId={enemy.SpawningId}, active={enemy.gameObject.activeInHierarchy}";
-
             string selectedEnemyName = selectedEnemy == null ? "none" : selectedEnemy.name;
 
             ModLog.Info(
@@ -98,6 +127,64 @@ namespace Blasphemous.Multiplayer.Client
                 $"position={spawnPoint.transform.position}, spawningId={spawnPoint.SpawningId}, " +
                 $"hasEnemySpawned={spawnPoint.HasEnemySpawned}, consumed={spawnPoint.Consumed}, " +
                 $"selectedEnemy={selectedEnemyName}, spawnedEnemy=[{enemyState}]");
+        }
+
+        internal static void LogConsumedSpawns(string eventName, EnemySpawner spawner)
+        {
+            if (spawner == null)
+            {
+                ModLog.Info($"[EnemySpawnDiagnostics] {eventName}: spawner=null");
+                return;
+            }
+
+            try
+            {
+                FieldInfo field = null;
+                Type type = spawner.GetType();
+                while (type != null && field == null)
+                {
+                    field = type.GetField("consumedSpawns",
+                        BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                    type = type.BaseType;
+                }
+
+                if (field == null)
+                {
+                    ModLog.Info($"[EnemySpawnDiagnostics] {eventName}: consumedSpawns field not found");
+                    return;
+                }
+
+                object owner = field.IsStatic ? null : (object)spawner;
+                object value = field.GetValue(owner);
+                if (value == null)
+                {
+                    ModLog.Info($"[EnemySpawnDiagnostics] {eventName}: consumedSpawns=null, count=0");
+                    return;
+                }
+
+                IEnumerable entries = value as IEnumerable;
+                if (entries == null)
+                {
+                    ModLog.Info($"[EnemySpawnDiagnostics] {eventName}: consumedSpawns type={value.GetType().FullName}, not enumerable");
+                    return;
+                }
+
+                int count = 0;
+                StringBuilder positions = new StringBuilder();
+                foreach (object entry in entries)
+                {
+                    if (count > 0)
+                        positions.Append("; ");
+                    positions.Append(entry == null ? "null" : entry.ToString());
+                    count++;
+                }
+
+                ModLog.Info($"[EnemySpawnDiagnostics] {eventName}: consumedSpawns count={count}, positions=[{positions}]");
+            }
+            catch (Exception ex)
+            {
+                ModLog.Info($"[EnemySpawnDiagnostics] {eventName}: failed to inspect consumedSpawns: {ex.GetType().Name}: {ex.Message}");
+            }
         }
     }
 }

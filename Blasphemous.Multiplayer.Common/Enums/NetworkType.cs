@@ -1,4 +1,4 @@
-﻿
+
 namespace Blasphemous.Multiplayer.Common.Enums;
 
 public enum NetworkType
@@ -16,4 +16,5 @@ public enum NetworkType
     Attack = 10,
     Effect = 11,
     Ping = 12,
+    WorldReset = 13,
 }

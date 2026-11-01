@@ -41,13 +41,13 @@ public static class EnemyDeathSyncManager
             return false;
 
         string key = MakeGenerationKey(sceneName, spawnPointId);
-        context = new EnemyDamageContext(enemy, sceneName, spawnPointId, GetGeneration(key));
+        context = new EnemyDamageContext(enemy, sceneName, spawnPointId, GetGeneration(key), enemy.Stats.Life.Current);
         return true;
     }
 
     internal static void CompleteLocalHit(EnemyDamageContext context)
     {
-        if (!context.Valid || applyingRemoteDeath || context.Enemy == null || !context.Enemy.Status.Dead)
+        if (!context.Valid || applyingRemoteDeath || context.Enemy == null)
             return;
 
         string key = MakeGenerationKey(context.SceneName, context.SpawnPointId);
@@ -55,9 +55,63 @@ public static class EnemyDeathSyncManager
         if (current != context.Generation)
             return;
 
-        generations[key] = current + 1;
-        ModLog.Info($"[EnemyDeathSync] Local death scene={context.SceneName}, spawn={context.SpawnPointId}, generation={current}");
-        Main.Multiplayer.NetworkManager.SendEnemyDeath(context.SceneName, context.SpawnPointId, current);
+        // Death remains a separate packet so the receiver can run the native death lifecycle.
+        if (context.Enemy.Status.Dead)
+        {
+            generations[key] = current + 1;
+            ModLog.Info($"[EnemyDeathSync] Local death scene={context.SceneName}, spawn={context.SpawnPointId}, generation={current}");
+            Main.Multiplayer.NetworkManager.SendEnemyDeath(context.SceneName, context.SpawnPointId, current);
+            return;
+        }
+
+        // First implementation scope: Fool. Damage is measured from actual HP before/after
+        // native damage processing, so defense and invulnerability are already accounted for.
+        if (!(context.Enemy is Fool))
+            return;
+
+        float damage = context.StartingHealth - context.Enemy.Stats.Life.Current;
+        if (damage > 0.001f)
+        {
+            ModLog.Info($"[EnemyHealthSync] Local damage scene={context.SceneName}, spawn={context.SpawnPointId}, generation={current}, damage={damage:0.##}");
+            Main.Multiplayer.NetworkManager.SendEnemyHealth(context.SceneName, context.SpawnPointId, current, damage);
+        }
+    }
+
+    public static void ApplyRemoteDamage(string sceneName, string spawnPointId, int generation, float damage)
+    {
+        if (applyingRemoteDeath || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
+            generation < 0 || damage <= 0f || float.IsNaN(damage) || float.IsInfinity(damage))
+            return;
+        if (Core.LevelManager.currentLevel == null || Core.LevelManager.currentLevel.LevelName != sceneName)
+            return;
+
+        string key = MakeGenerationKey(sceneName, spawnPointId);
+        int current = GetGeneration(key);
+        if (current != generation)
+            return;
+
+        if (!TryFindSpawnPoint(sceneName, spawnPointId, out EnemySpawnPoint spawnPoint))
+        {
+            ModLog.Warn($"[EnemyHealthSync] Spawn point not found or identity is ambiguous: scene={sceneName}, spawn={spawnPointId}");
+            return;
+        }
+
+        Enemy enemy = spawnPoint.SpawnedEnemy;
+        if (!(enemy is Fool) || enemy.Status.Dead)
+            return;
+
+        float newHealth = enemy.Stats.Life.Current - damage;
+        if (newHealth <= 0f)
+        {
+            // Multiple clients can land individually nonlethal hits before receiving each
+            // other's packets. Their combined damage may be lethal, so promote that result
+            // through the same native death path used by the explicit death packet.
+            ApplyRemoteDeath(sceneName, spawnPointId, generation);
+            return;
+        }
+
+        enemy.SetHealth(newHealth);
+        ModLog.Info($"[EnemyHealthSync] Applied remote damage scene={sceneName}, spawn={spawnPointId}, generation={generation}, damage={damage:0.##}, hp={newHealth:0.##}");
     }
 
     public static void ApplyRemoteDeath(string sceneName, string spawnPointId, int generation)
@@ -228,14 +282,16 @@ internal struct EnemyDamageContext
     internal readonly string SceneName;
     internal readonly string SpawnPointId;
     internal readonly int Generation;
+    internal readonly float StartingHealth;
     internal readonly bool Valid;
 
-    internal EnemyDamageContext(Enemy enemy, string sceneName, string spawnPointId, int generation)
+    internal EnemyDamageContext(Enemy enemy, string sceneName, string spawnPointId, int generation, float startingHealth)
     {
         Enemy = enemy;
         SceneName = sceneName;
         SpawnPointId = spawnPointId;
         Generation = generation;
+        StartingHealth = startingHealth;
         Valid = true;
     }
 }

@@ -113,6 +113,7 @@ public class Server
                 case NetworkType.Ping:          ReceivePing(e.ip, data); break;
                 case NetworkType.WorldReset:   receivePlayerWorldReset(e.ip, data); break;
                 case NetworkType.EnemyDeath:   receivePlayerEnemyDeath(e.ip, data); break;
+                case NetworkType.EnemyHealth:  receivePlayerEnemyHealth(e.ip, data); break;
                 default:
                     Logger.Error($"Data type '{type}' is not valid"); break;
             }
@@ -784,5 +785,43 @@ public class Server
         }
     }
 
-    private const byte PROTOCOL_VERSION = 5;
+    // Shared enemy health delta
+
+    private void receivePlayerEnemyHealth(string playerIp, byte[] data)
+    {
+        if (data == null || data.Length == 0)
+            return;
+
+        try
+        {
+            string sceneName;
+            using (MemoryStream stream = new MemoryStream(data))
+            using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
+            {
+                sceneName = reader.ReadString();
+                string spawnPointId = reader.ReadString();
+                int generation = reader.ReadInt32();
+                float damage = reader.ReadSingle();
+                if (stream.Position != stream.Length || string.IsNullOrEmpty(spawnPointId) || generation < 0 ||
+                    damage <= 0f || float.IsNaN(damage) || float.IsInfinity(damage))
+                    return;
+            }
+
+            PlayerInfo current = getCurrentPlayer(playerIp);
+            if (current == null || string.IsNullOrEmpty(sceneName) || current.sceneName != sceneName)
+                return;
+
+            foreach (string ip in connectedPlayers.Keys)
+            {
+                if (playerIp != ip && current.isInSameScene(connectedPlayers[ip]) && connectedPlayers[ip].sceneName == sceneName)
+                    Send(ip, data, NetworkType.EnemyHealth);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Ignored malformed enemy health packet: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private const byte PROTOCOL_VERSION = 6;
 }

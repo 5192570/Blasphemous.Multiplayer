@@ -68,11 +68,9 @@ namespace Blasphemous.Multiplayer.Client
         [HarmonyPostfix]
         private static void Postfix(EnemySpawnPoint __instance)
         {
-            // The IsSpawnerConsumed postfix below records the actual return value.
-            // This extra marker makes it easier to find the check among CreateEnemy logs.
             if (__instance != null)
             {
-                ModLog.Info($"[EnemySpawnDiagnostics] CreateEnemy:consumption-check-completed position={__instance.transform.position}");
+                EnemySpawnDiagnostics.Write($"CreateEnemy:consumption-check-completed position={__instance.transform.position}");
             }
         }
     }
@@ -84,7 +82,7 @@ namespace Blasphemous.Multiplayer.Client
         private static void Postfix(EnemySpawnPoint __0, bool __result)
         {
             string position = __0 == null ? "[null]" : __0.transform.position.ToString();
-            ModLog.Info($"[EnemySpawnDiagnostics] IsSpawnerConsumed:result position={position}, result={__result}");
+            EnemySpawnDiagnostics.Write($"IsSpawnerConsumed:result position={position}, result={__result}");
         }
     }
 
@@ -106,11 +104,17 @@ namespace Blasphemous.Multiplayer.Client
 
     internal static class EnemySpawnDiagnostics
     {
+        internal static void Write(string message)
+        {
+            // UTC keeps timestamps directly comparable between the two players' logs.
+            ModLog.Info($"[EnemySpawnDiagnostics] {DateTime.UtcNow:yyyy-MM-ddTHH:mm:ss.fffZ} {message}");
+        }
+
         internal static void Log(string eventName, EnemySpawnPoint spawnPoint)
         {
             if (spawnPoint == null)
             {
-                ModLog.Info($"[EnemySpawnDiagnostics] {eventName}: spawnPoint=null");
+                Write($"{eventName}: spawnPoint=null");
                 return;
             }
 
@@ -121,8 +125,8 @@ namespace Blasphemous.Multiplayer.Client
                 : $"name={enemy.name}, instanceId={enemy.gameObject.GetInstanceID()}, spawningId={enemy.SpawningId}, active={enemy.gameObject.activeInHierarchy}";
             string selectedEnemyName = selectedEnemy == null ? "none" : selectedEnemy.name;
 
-            ModLog.Info(
-                $"[EnemySpawnDiagnostics] {eventName}: " +
+            Write(
+                $"{eventName}: " +
                 $"spawnPoint={spawnPoint.name}, instanceId={spawnPoint.gameObject.GetInstanceID()}, " +
                 $"position={spawnPoint.transform.position}, spawningId={spawnPoint.SpawningId}, " +
                 $"hasEnemySpawned={spawnPoint.HasEnemySpawned}, consumed={spawnPoint.Consumed}, " +
@@ -133,7 +137,7 @@ namespace Blasphemous.Multiplayer.Client
         {
             if (spawner == null)
             {
-                ModLog.Info($"[EnemySpawnDiagnostics] {eventName}: spawner=null");
+                Write($"{eventName}: spawner=null");
                 return;
             }
 
@@ -150,7 +154,7 @@ namespace Blasphemous.Multiplayer.Client
 
                 if (field == null)
                 {
-                    ModLog.Info($"[EnemySpawnDiagnostics] {eventName}: consumedSpawns field not found");
+                    Write($"{eventName}: consumedSpawns field not found");
                     return;
                 }
 
@@ -158,14 +162,14 @@ namespace Blasphemous.Multiplayer.Client
                 object value = field.GetValue(owner);
                 if (value == null)
                 {
-                    ModLog.Info($"[EnemySpawnDiagnostics] {eventName}: consumedSpawns=null, count=0");
+                    Write($"{eventName}: consumedSpawns=null, count=0");
                     return;
                 }
 
                 IEnumerable entries = value as IEnumerable;
                 if (entries == null)
                 {
-                    ModLog.Info($"[EnemySpawnDiagnostics] {eventName}: consumedSpawns type={value.GetType().FullName}, not enumerable");
+                    Write($"{eventName}: consumedSpawns type={value.GetType().FullName}, not enumerable");
                     return;
                 }
 
@@ -179,11 +183,11 @@ namespace Blasphemous.Multiplayer.Client
                     count++;
                 }
 
-                ModLog.Info($"[EnemySpawnDiagnostics] {eventName}: consumedSpawns count={count}, positions=[{positions}]");
+                Write($"{eventName}: consumedSpawns count={count}, positions=[{positions}]");
             }
             catch (Exception ex)
             {
-                ModLog.Info($"[EnemySpawnDiagnostics] {eventName}: failed to inspect consumedSpawns: {ex.GetType().Name}: {ex.Message}");
+                Write($"{eventName}: failed to inspect consumedSpawns: {ex.GetType().Name}: {ex.Message}");
             }
         }
     }

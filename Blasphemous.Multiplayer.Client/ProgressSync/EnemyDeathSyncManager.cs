@@ -4,6 +4,7 @@ using System.Globalization;
 using Blasphemous.ModdingAPI;
 using Framework.Managers;
 using Gameplay.GameControllers.Enemies.Framework.Damage;
+using Gameplay.GameControllers.Enemies.Fool;
 using Gameplay.GameControllers.Entities;
 using HarmonyLib;
 using Tools.Level.Layout;
@@ -115,7 +116,19 @@ public static class EnemyDeathSyncManager
                     }
                 }
 
-                ModLog.Info($"[EnemyDeathSync] Remote cleanup disabledColliders={disabledColliders}, enemyDeactivated=false, deathAnimationPreserved=true");
+                if (enemy is Fool fool && fool.Behaviour != null)
+                {
+                    // FoolDeathBehaviour destroys the enemy GameObject when its death animation exits.
+                    fool.Behaviour.Death();
+                    ModLog.Info($"[EnemyDeathSync] Started Fool death animation; disabledColliders={disabledColliders}");
+                }
+                else
+                {
+                    // Other enemy types retain immediate cleanup until their native death-animation
+                    // lifecycles are implemented.
+                    enemy.gameObject.SetActive(false);
+                    ModLog.Info($"[EnemyDeathSync] Remote cleanup disabledColliders={disabledColliders}, enemyDeactivated=true");
+                }
             }
             finally
             {

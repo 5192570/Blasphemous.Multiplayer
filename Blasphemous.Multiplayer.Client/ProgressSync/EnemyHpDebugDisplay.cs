@@ -117,9 +117,13 @@ public sealed class EnemyHpDebugDisplay : MonoBehaviour
         if (_owner == null || _text == null)
             return;
 
-        string internalName = !string.IsNullOrEmpty(_owner.Id)
-            ? _owner.Id
-            : !string.IsNullOrEmpty(_owner.EntityName) ? _owner.EntityName : _owner.gameObject.name;
+        // EntityName is the authored, human-readable name. Id (e.g. EV11) is
+        // an internal identifier and should only be used as a last-resort fallback.
+        string internalName = !string.IsNullOrEmpty(_owner.EntityName)
+            ? _owner.EntityName
+            : !string.IsNullOrEmpty(_owner.GetType().Name)
+                ? _owner.GetType().Name
+                : !string.IsNullOrEmpty(_owner.Id) ? _owner.Id : _owner.gameObject.name;
 
         _text.text = string.Format(
             CultureInfo.InvariantCulture,

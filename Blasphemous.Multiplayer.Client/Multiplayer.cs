@@ -56,6 +56,7 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
 
     protected override void OnInitialize()
     {
+        EnemyHpDebugDisplayManager.Initialize();
         LocalizationHandler.RegisterDefaultLanguage("en");
 
         // Create managers
@@ -101,6 +102,9 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
     protected override void OnLevelLoaded(string oldLevel, string newLevel)
     {
         CurrentlyInLevel = newLevel != "MainMenu";
+        if (CurrentlyInLevel)
+            EnemyHpDebugDisplayManager.AttachExisting();
+
         NotificationManager.LevelLoaded();
         OtherPlayerManager.LevelLoaded(newLevel);
         ProgressManager.LevelLoaded(newLevel);

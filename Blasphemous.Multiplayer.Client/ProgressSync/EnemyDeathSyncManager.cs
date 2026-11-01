@@ -98,8 +98,8 @@ public static class EnemyDeathSyncManager
                 enemy.SetHealth(0f);
 
                 // Remote SetHealth bypasses EnemyDamageArea.TakeDamage's collider cleanup.
-                // Disable every damage area and deactivate the enemy so it cannot keep
-                // animating, tracking players, colliding, or being hit again on this client.
+                // Disable every damage area, but leave the enemy active: its native
+                // death behavior needs to run so the normal death animation can play.
                 EnemyDamageArea[] damageAreas = enemy.GetComponentsInChildren<EnemyDamageArea>(true);
                 int disabledColliders = 0;
                 foreach (EnemyDamageArea damageArea in damageAreas)
@@ -115,8 +115,7 @@ public static class EnemyDeathSyncManager
                     }
                 }
 
-                enemy.gameObject.SetActive(false);
-                ModLog.Info($"[EnemyDeathSync] Remote cleanup disabledColliders={disabledColliders}, enemyDeactivated=true");
+                ModLog.Info($"[EnemyDeathSync] Remote cleanup disabledColliders={disabledColliders}, enemyDeactivated=false, deathAnimationPreserved=true");
             }
             finally
             {

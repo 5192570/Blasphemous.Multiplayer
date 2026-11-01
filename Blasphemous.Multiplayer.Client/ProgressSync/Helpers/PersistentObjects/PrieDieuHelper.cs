@@ -12,7 +12,7 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
         {
             if (Main.Multiplayer.ProgressManager.CurrentlyUpdatingProgress) return;
 
-            string persistentId = __instance.GetPersistentID();
+            string persistentId = __instance.GetPersistenID();
             ModLog.Info($"Used PrieDieu: {persistentId}");
             Main.Multiplayer.ProgressManager.UsePersistentObject(persistentId);
         }
@@ -62,7 +62,7 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
             if (dataPath != "use") return true;
 
             // Maybe play activation animation
-            __instance.Lighthed = true;
+            __instance.Ligthed = true;
             return false;
         }
     }
@@ -75,10 +75,10 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
             if (data != null)
             {
                 // This method is being called normally - only execute if object hasn't been interacted with
-                return !Main.Multiplayer.ProgressManager.IsObjectInteracted(__instance.GetPersistentID());
+                return !Main.Multiplayer.ProgressManager.IsObjectInteracted(__instance.GetPersistenID());
             }
 
-            __instance.Lighthed = true;
+            __instance.Ligthed = true;
             return false;
         }
     }

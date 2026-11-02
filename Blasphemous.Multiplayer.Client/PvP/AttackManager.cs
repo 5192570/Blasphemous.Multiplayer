@@ -1,4 +1,4 @@
-﻿using Blasphemous.ModdingAPI;
+using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Client.Players;
 using Blasphemous.Multiplayer.Client.PvP.Models;
 using Framework.Managers;
@@ -58,6 +58,31 @@ namespace Blasphemous.Multiplayer.Client.PvP
                 return;
 
             other.OtherPlayerAttack.PlayEffectAnimation(effect, other.IsFacingRight);
+        }
+
+        public void ReceivePlayerImpact(string playerName, Vector3 position, byte effectKind, byte bloodType, bool facingRight)
+        {
+            if (Core.Logic.Penitent == null || Main.Multiplayer.OtherPlayerManager.FindActivePlayer(playerName) == null)
+                return;
+
+            if (effectKind == 0)
+            {
+                Core.Logic.Penitent.SwordSparkSpawner.GetSwordSpark(position);
+                return;
+            }
+
+            if (effectKind == 1)
+            {
+                BloodSpawner bloodSpawner = Core.Logic.Penitent.GetComponentInChildren<BloodSpawner>();
+                if (bloodSpawner == null)
+                    return;
+
+                BloodSpawner.BLOOD_FX_TYPES type = (BloodSpawner.BLOOD_FX_TYPES)Mathf.Clamp((int)bloodType, 0, 2);
+                GameObject blood = bloodSpawner.GetBloodFX(type);
+                blood.transform.localScale = new Vector3(facingRight ? 1 : -1, 1f, 1f);
+                position += new Vector3(UnityEngine.Random.Range(-0.2f, 0.2f), UnityEngine.Random.Range(-0.2f, 0.2f), 0f);
+                blood.transform.position = position;
+            }
         }
 
         private void DamagePlayer(AttackType attack, byte damageAmount, GameObject attacker)

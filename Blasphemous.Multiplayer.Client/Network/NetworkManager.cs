@@ -156,6 +156,7 @@ namespace Blasphemous.Multiplayer.Client.Network
                         case NetworkType.EnemyHealth: ReceiveEnemyHealth(messageData); break;
                         case NetworkType.EnemyHit: ReceiveEnemyHit(messageData); break;
                         case NetworkType.EnemyPosition: ReceiveEnemyPosition(messageData); break;
+                        case NetworkType.PlayerImpact: ReceivePlayerImpact(messageData); break;
                     }
                     startIdx += 3 + length;
                 }
@@ -616,6 +617,37 @@ namespace Blasphemous.Multiplayer.Client.Network
             EffectType effectType = (EffectType)data[startIdx];
 
             Main.Multiplayer.AttackManager.ReceiveEffect(playerName, effectType);
+        }
+
+        // Player impact effects
+
+        public void SendPlayerImpact(Vector3 position, byte effectKind, byte bloodType, bool facingRight)
+        {
+            List<byte> bytes = new();
+            bytes.AddRange(BitConverter.GetBytes(position.x));
+            bytes.AddRange(BitConverter.GetBytes(position.y));
+            bytes.AddRange(BitConverter.GetBytes(position.z));
+            bytes.Add(effectKind);
+            bytes.Add(bloodType);
+            bytes.Add((byte)(facingRight ? 1 : 0));
+            QueueMesssage(bytes.ToArray(), NetworkType.PlayerImpact);
+        }
+
+        private void ReceivePlayerImpact(byte[] data)
+        {
+            int startIdx = ExtractNameFromData(data, out string playerName);
+            if (data.Length - startIdx != 15)
+                return;
+
+            Vector3 position = new(
+                BitConverter.ToSingle(data, startIdx),
+                BitConverter.ToSingle(data, startIdx + 4),
+                BitConverter.ToSingle(data, startIdx + 8));
+            byte effectKind = data[startIdx + 12];
+            byte bloodType = data[startIdx + 13];
+            bool facingRight = data[startIdx + 14] != 0;
+
+            Main.Multiplayer.AttackManager.ReceivePlayerImpact(playerName, position, effectKind, bloodType, facingRight);
         }
 
         // Ping

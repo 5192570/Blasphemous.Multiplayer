@@ -1,4 +1,4 @@
-﻿using Blasphemous.Multiplayer.Client.PvP.Models;
+using Blasphemous.Multiplayer.Client.PvP.Models;
 using Gameplay.GameControllers.AnimationBehaviours.Player.Attack;
 using Gameplay.GameControllers.AnimationBehaviours.Player.ClimbClifLede;
 using Gameplay.GameControllers.AnimationBehaviours.Player.ClimbLadder;
@@ -11,11 +11,71 @@ using Gameplay.GameControllers.AnimationBehaviours.Player.Prayer;
 using Gameplay.GameControllers.AnimationBehaviours.Player.RangeAttack;
 using Gameplay.GameControllers.AnimationBehaviours.Player.Run;
 using Gameplay.GameControllers.AnimationBehaviours.Player.SubStatesBehaviours;
+using Framework.Managers;
+using Gameplay.GameControllers.Entities;
+using Gameplay.GameControllers.Penitent;
+using Gameplay.GameControllers.Penitent.Attack;
 using HarmonyLib;
 using UnityEngine;
 
 namespace Blasphemous.Multiplayer.Client
 {
+    // Replicate the native sword impact effects after the game has confirmed an impact.
+    [HarmonyPatch(typeof(PenitentSword), nameof(PenitentSword.SpawnSparks))]
+    class PenitentSwordSpawnSparks_Patch
+    {
+        public static void Postfix(PenitentSword __instance, Vector3 centerPos)
+        {
+            if (!PlayerImpactSyncPatches.TryGetLocalWeaponCollider(__instance, out Collider2D weaponCollider, out bool facingRight))
+                return;
+
+            Vector3 direction = centerPos - weaponCollider.bounds.center;
+            if (direction.sqrMagnitude < 0.0001f)
+                direction = facingRight ? Vector3.right : Vector3.left;
+
+            Vector3 effectPosition = weaponCollider.bounds.center + direction.normalized;
+            Main.Multiplayer.NetworkManager.SendPlayerImpact(effectPosition, 0, 0, facingRight);
+        }
+    }
+
+    [HarmonyPatch(typeof(PenitentSword), nameof(PenitentSword.SpawnBlood))]
+    class PenitentSwordSpawnBlood_Patch
+    {
+        public static void Postfix(PenitentSword __instance, Vector3 centerPos, Hit swordHit)
+        {
+            if (!PlayerImpactSyncPatches.TryGetLocalWeaponCollider(__instance, out Collider2D weaponCollider, out bool facingRight))
+                return;
+
+            Vector3 direction = centerPos - weaponCollider.bounds.center;
+            if (direction.sqrMagnitude < 0.0001f)
+                direction = facingRight ? Vector3.right : Vector3.left;
+
+            Vector3 effectPosition = centerPos + direction.normalized * 0.25f;
+            // Keep the first pass deterministic: normal hits use small blood, stronger hits use big blood.
+            byte bloodType = swordHit.DamageType == 0 ? (byte)0 : (byte)2;
+            Main.Multiplayer.NetworkManager.SendPlayerImpact(effectPosition, 1, bloodType, facingRight);
+        }
+    }
+
+    static class PlayerImpactSyncPatches
+    {
+        public static bool TryGetLocalWeaponCollider(PenitentSword sword, out Collider2D weaponCollider, out bool facingRight)
+        {
+            weaponCollider = null;
+            facingRight = true;
+
+            if (Core.Logic.Penitent == null || sword == null || sword.GetComponentInParent<Penitent>() != Core.Logic.Penitent)
+                return false;
+
+            if (Core.Logic.Penitent.AttackArea == null)
+                return false;
+
+            weaponCollider = Core.Logic.Penitent.AttackArea.WeaponCollider;
+            facingRight = Core.Logic.Penitent.Status.Orientation == EntityOrientation.Right;
+            return weaponCollider != null;
+        }
+    }
+
     // Default attack
     [HarmonyPatch(typeof(DefaultSwordSlashBehaviour), "OnStateEnter")]
     class DefaultSwordSlashBehaviourEnter_Patch

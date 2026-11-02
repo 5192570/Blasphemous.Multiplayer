@@ -116,6 +116,7 @@ public class Server
                 case NetworkType.EnemyHealth:  receivePlayerEnemyHealth(e.ip, data); break;
                 case NetworkType.EnemyHit:     receivePlayerEnemyHit(e.ip, data); break;
                 case NetworkType.EnemyPosition: receivePlayerEnemyPosition(e.ip, data); break;
+                case NetworkType.PlayerImpact: receivePlayerImpact(e.ip, data); break;
                 default:
                     Logger.Error($"Data type '{type}' is not valid"); break;
             }
@@ -717,6 +718,25 @@ public class Server
         return bytes.ToArray();
     }
 
+    // Player impact effects
+
+    private void receivePlayerImpact(string playerIp, byte[] data)
+    {
+        if (data.Length != 15)
+            return;
+
+        PlayerInfo current = getCurrentPlayer(playerIp);
+        foreach (string ip in connectedPlayers.Keys)
+        {
+            if (playerIp != ip && current.isInSameScene(connectedPlayers[ip]))
+            {
+                List<byte> bytes = addPlayerNameToData(current.name);
+                bytes.AddRange(data);
+                Send(ip, bytes.ToArray(), NetworkType.PlayerImpact);
+            }
+        }
+    }
+
     // Ping
 
     private void SendPing(string playerIp, float time)
@@ -873,5 +893,5 @@ public class Server
         catch (Exception ex) { Logger.Warn($"Ignored malformed enemy position packet: {ex.GetType().Name}: {ex.Message}"); }
     }
 
-    private const byte PROTOCOL_VERSION = 8;
+    private const byte PROTOCOL_VERSION = 9;
 }

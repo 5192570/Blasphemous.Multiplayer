@@ -38,6 +38,11 @@ public sealed class FoolMovementSync : MonoBehaviour
 {
     private const float SnapshotInterval = 0.08f;
     private const float IdentityRefreshInterval = 0.5f;
+    // Give the remote player's EnterScene notification and first enemy snapshot time to arrive.
+    // This wait is unconditional: CurrentScene may still be empty when this Fool is first updated.
+    private const float PeerStateGrace = 1.5f;
+    // A peer counts as actively publishing this exact enemy generation if a snapshot arrived recently.
+    private const float PeerSnapshotTimeout = 1f;
     private Fool _fool;
     private string _sceneName;
     private string _spawnPointId;
@@ -47,6 +52,11 @@ public sealed class FoolMovementSync : MonoBehaviour
     private bool _isAuthority;
     private bool _authorityInitialized;
     private bool _hasSnapshot;
+    private bool _entryEvaluated;
+    private bool _awaitingPeerState;
+    private float _awaitDeadline;
+    private int _lastPeerSnapshotGeneration = -1;
+    private float _lastPeerSnapshot = float.NegativeInfinity;
     private Vector3 _targetPosition;
 
     internal void Attach(Fool fool)
@@ -72,8 +82,19 @@ public sealed class FoolMovementSync : MonoBehaviour
         }
         if (string.IsNullOrEmpty(_sceneName) || string.IsNullOrEmpty(_spawnPointId) || _generation < 0) return;
 
-        SetAuthority(IsLocalAuthority());
-        if (_isAuthority)
+        if (!_entryEvaluated)
+        {
+            // Always wait briefly before publishing. A returning player may not yet know the
+            // incumbent's CurrentScene because its EnterScene packet is processed asynchronously.
+            // The incumbent can still send snapshots during this period, which we accept below.
+            _entryEvaluated = true;
+            _awaitingPeerState = true;
+            _awaitDeadline = Time.unscaledTime + PeerStateGrace;
+            ModLog.Info($"[FoolMovementSync] Awaiting initial peer state for {_spawnPointId}");
+        }
+
+        SetAuthority(ResolveAuthority());
+        if (_isAuthority && !_awaitingPeerState)
         {
             UpdateTarget();
             if (Time.unscaledTime >= _nextSnapshot)
@@ -84,7 +105,7 @@ public sealed class FoolMovementSync : MonoBehaviour
                     (byte)_fool.Status.Orientation, (byte)_fool.entityCurrentState, walking, _fool.Stats.Life.Current);
             }
         }
-        else
+        else if (!_isAuthority)
         {
             if (EnemyDeathSyncManager.TryTakePendingRemoteHealth(_fool, _generation, out float pendingHealth))
                 ApplyHealth(pendingHealth);
@@ -95,9 +116,18 @@ public sealed class FoolMovementSync : MonoBehaviour
         }
     }
 
+    /// <summary>Records a snapshot for this exact enemy generation, even if it is not applied.</summary>
+    internal void NotePeerSnapshot(int generation)
+    {
+        if (generation != _generation) return;
+        _lastPeerSnapshotGeneration = generation;
+        _lastPeerSnapshot = Time.unscaledTime;
+    }
+
     internal void ApplySnapshot(Vector3 position, byte orientation, byte state, bool walking, float currentHealth)
     {
-        if (_isAuthority || _fool == null) return;
+        // While awaiting the peer's state this client is not yet authoritative, so it accepts the snapshot.
+        if ((_isAuthority && !_awaitingPeerState) || _fool == null) return;
         ApplyHealth(currentHealth);
         _targetPosition = position;
         _hasSnapshot = true;
@@ -128,6 +158,46 @@ public sealed class FoolMovementSync : MonoBehaviour
         {
             _sceneName = null; _spawnPointId = null; _generation = -1;
         }
+    }
+
+    private bool HasPeerInScene()
+    {
+        string localName = Main.Multiplayer.PlayerName;
+        foreach (PlayerStatus player in Main.Multiplayer.OtherPlayerManager.AllConnectedPlayers)
+        {
+            if (player == null || player.CurrentScene != _sceneName || string.IsNullOrEmpty(player.Name) || player.Name == localName) continue;
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Name ordering alone lets a returning player take over with a fresh full-health Fool. Instead the
+    /// player who already holds the Fool keeps authority, and a newcomer follows until the peer stops publishing.
+    /// Name ordering only breaks ties (both entered together, or both respawned by a Prie Dieu reset).
+    /// </summary>
+    private bool ResolveAuthority()
+    {
+        bool peerPublishing = _lastPeerSnapshotGeneration == _generation &&
+            Time.unscaledTime - _lastPeerSnapshot < PeerSnapshotTimeout;
+        bool nameWins = IsLocalAuthority();
+
+        if (_awaitingPeerState)
+        {
+            // A matching snapshot is stronger evidence than the asynchronous scene roster.
+            if (peerPublishing) { _awaitingPeerState = false; return false; }
+            // Keep the local AI untouched while waiting, but publish nothing.
+            if (Time.unscaledTime < _awaitDeadline) return true;
+            _awaitingPeerState = false;
+            return !HasPeerInScene() || nameWins;
+        }
+
+        if (!HasPeerInScene()) return true;
+
+        // Incumbent: yield only if a peer is also publishing and wins the name tie-break.
+        if (_isAuthority) return !(peerPublishing && !nameWins);
+        // Follower: keep following while the peer publishes; otherwise fall back to name ordering.
+        return nameWins && !peerPublishing;
     }
 
     private bool IsLocalAuthority()

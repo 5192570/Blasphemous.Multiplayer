@@ -127,6 +127,7 @@ public static class EnemyDeathSyncManager
             sync = fool.gameObject.AddComponent<FoolMovementSync>();
             sync.Attach(fool);
         }
+        sync.NotePeerSnapshot(generation);
         sync.ApplySnapshot(position, orientation, state, walking, currentHealth);
         pendingEnemyHealth.Remove(key);
     }

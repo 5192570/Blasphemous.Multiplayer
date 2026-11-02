@@ -67,7 +67,8 @@ namespace Blasphemous.Multiplayer.Client.PvP
 
             if (effectKind == 0)
             {
-                Core.Logic.Penitent.SwordSparkSpawner.GetSwordSpark(position);
+                if (Core.Logic.Penitent.SwordSparkSpawner != null)
+                    Core.Logic.Penitent.SwordSparkSpawner.GetSwordSpark(position);
                 return;
             }
 

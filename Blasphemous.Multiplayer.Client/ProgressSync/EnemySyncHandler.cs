@@ -4,7 +4,7 @@ using UnityEngine;
 namespace Blasphemous.Multiplayer.Client.ProgressSync;
 
 /// <summary>Enemy-specific gameplay bridge used by the shared enemy synchronization component.</summary>
-internal abstract class EnemySyncHandler : MonoBehaviour
+public abstract class EnemySyncHandler : MonoBehaviour
 {
     internal Enemy Enemy { get; private set; }
 

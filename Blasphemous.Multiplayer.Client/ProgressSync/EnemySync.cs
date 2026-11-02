@@ -9,7 +9,7 @@ using UnityEngine;
 namespace Blasphemous.Multiplayer.Client.ProgressSync;
 
 /// <summary>Shared authority, snapshot publication, and interpolation for supported enemies.</summary>
-internal sealed class EnemySync : MonoBehaviour
+public sealed class EnemySync : MonoBehaviour
 {
     private const float SnapshotInterval = 0.08f;
     private const float IdentityRefreshInterval = 0.5f;

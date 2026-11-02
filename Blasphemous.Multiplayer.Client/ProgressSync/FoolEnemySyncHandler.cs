@@ -6,7 +6,7 @@ using UnityEngine;
 namespace Blasphemous.Multiplayer.Client.ProgressSync;
 
 /// <summary>Gameplay adapter for Prosylte (the Fool enemy class).</summary>
-internal sealed class FoolEnemySyncHandler : EnemySyncHandler
+public sealed class FoolEnemySyncHandler : EnemySyncHandler
 {
     private Fool _fool;
 

@@ -180,13 +180,16 @@ public sealed class EnemySync : MonoBehaviour
     {
         if (Core.Logic.Penitent == null) return;
 
-        // Keep a valid target for a short window so nearby players cannot make the
-        // authoritative enemy alternate targets on consecutive AI updates.
+        // Keep enforcing a valid target during the commitment window so the
+        // enemy's own AI cannot silently replace it between sync updates.
         if (_committedTarget != null &&
             _committedTarget.activeInHierarchy &&
             Time.unscaledTime < _targetCommitmentUntil &&
             IsAvailableTarget(_committedTarget))
+        {
+            _handler.SetTarget(_committedTarget);
             return;
+        }
 
         GameObject nearest = Core.Logic.Penitent.gameObject;
         float nearestDistance = Vector2.Distance(_enemy.transform.position, nearest.transform.position);

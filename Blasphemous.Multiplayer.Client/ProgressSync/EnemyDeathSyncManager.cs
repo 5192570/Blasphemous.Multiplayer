@@ -42,7 +42,7 @@ public static class EnemyDeathSyncManager
             return false;
 
         string key = MakeGenerationKey(sceneName, spawnPointId);
-        context = new EnemyDamageContext(enemy, sceneName, spawnPointId, GetGeneration(key), enemy.Stats.Life.Current);
+        context = new EnemyDamageContext(enemy, sceneName, spawnPointId, GetGeneration(key), enemy.Stats.Life.Current, enemy.entityCurrentState);
         return true;
     }
 
@@ -77,7 +77,8 @@ public static class EnemyDeathSyncManager
             Main.Multiplayer.NetworkManager.SendEnemyHealth(context.SceneName, context.SpawnPointId, current, damage);
         }
 
-        Main.Multiplayer.NetworkManager.SendEnemyHit(context.SceneName, context.SpawnPointId, current, (byte)context.Enemy.Status.Orientation);
+        if (context.StartingState != EntityStates.Hurt && context.Enemy.entityCurrentState == EntityStates.Hurt)
+            Main.Multiplayer.NetworkManager.SendEnemyHit(context.SceneName, context.SpawnPointId, current, (byte)context.Enemy.Status.Orientation);
     }
 
     internal static bool TryGetSyncIdentity(Fool fool, out string sceneName, out string spawnPointId, out int generation)
@@ -323,15 +324,17 @@ internal struct EnemyDamageContext
     internal readonly string SpawnPointId;
     internal readonly int Generation;
     internal readonly float StartingHealth;
+    internal readonly EntityStates StartingState;
     internal readonly bool Valid;
 
-    internal EnemyDamageContext(Enemy enemy, string sceneName, string spawnPointId, int generation, float startingHealth)
+    internal EnemyDamageContext(Enemy enemy, string sceneName, string spawnPointId, int generation, float startingHealth, EntityStates startingState)
     {
         Enemy = enemy;
         SceneName = sceneName;
         SpawnPointId = spawnPointId;
         Generation = generation;
         StartingHealth = startingHealth;
+        StartingState = startingState;
         Valid = true;
     }
 }

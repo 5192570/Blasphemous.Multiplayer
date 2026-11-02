@@ -38,6 +38,13 @@ public static class WorldResetManager
 [HarmonyPatch(typeof(EnemySpawner), "RespawnDeadEnemies")]
 internal static class RespawnDeadEnemiesSync_Patch
 {
+    public static void Prefix()
+    {
+        // RespawnDeadEnemies is the game's intentional global spawn reset. Pending remote
+        // deaths for this scene must not suppress the enemies that this reset recreates.
+        EnemyDeathSyncManager.ClearPendingDeathsForWorldReset();
+    }
+
     public static void Postfix()
     {
         // A reset received from the peer must never be broadcast back to them.

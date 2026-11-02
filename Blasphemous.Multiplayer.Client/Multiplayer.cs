@@ -1,4 +1,4 @@
-﻿using Blasphemous.CheatConsole;
+using Blasphemous.CheatConsole;
 using Blasphemous.ModdingAPI;
 using Blasphemous.ModdingAPI.Helpers;
 using Blasphemous.ModdingAPI.Persistence;
@@ -56,6 +56,8 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
 
     protected override void OnInitialize()
     {
+        EnemyHpDebugDisplayManager.Initialize();
+        FoolMovementSyncManager.Initialize();
         LocalizationHandler.RegisterDefaultLanguage("en");
 
         // Create managers
@@ -90,6 +92,7 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
 
     public void OnDisconnect()
     {
+        EnemyDeathSyncManager.ResetSession();
         NotificationManager.DisplayNotification(LocalizationHandler.Localize("dcon"));
         ProgressManager.ResetProgressSentStatus();
         OtherPlayerManager.RemoveAllConnectedPlayers();
@@ -100,6 +103,12 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
     protected override void OnLevelLoaded(string oldLevel, string newLevel)
     {
         CurrentlyInLevel = newLevel != "MainMenu";
+        if (CurrentlyInLevel)
+        {
+            EnemyHpDebugDisplayManager.AttachExisting();
+            FoolMovementSyncManager.AttachExisting();
+        }
+
         NotificationManager.LevelLoaded();
         OtherPlayerManager.LevelLoaded(newLevel);
         ProgressManager.LevelLoaded(newLevel);

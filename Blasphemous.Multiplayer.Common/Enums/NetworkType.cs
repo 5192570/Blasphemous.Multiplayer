@@ -17,4 +17,8 @@ public enum NetworkType
     Effect = 11,
     Ping = 12,
     WorldReset = 13,
+    EnemyDeath = 14,
+    EnemyHealth = 15,
+    EnemyHit = 16,
+    EnemyPosition = 17,
 }

@@ -12,6 +12,7 @@ using Gameplay.GameControllers.AnimationBehaviours.Player.RangeAttack;
 using Gameplay.GameControllers.AnimationBehaviours.Player.Run;
 using Gameplay.GameControllers.AnimationBehaviours.Player.SubStatesBehaviours;
 using Framework.Managers;
+using Framework.FrameworkCore;
 using Gameplay.GameControllers.Entities;
 using Gameplay.GameControllers.Penitent;
 using Gameplay.GameControllers.Penitent.Attack;

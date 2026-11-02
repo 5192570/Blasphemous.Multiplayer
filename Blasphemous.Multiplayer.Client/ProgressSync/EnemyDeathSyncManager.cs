@@ -72,13 +72,16 @@ public static class EnemyDeathSyncManager
             return;
 
         float damage = context.StartingHealth - context.Enemy.Stats.Life.Current;
-        if (damage > 0.001f)
+        bool tookDamage = damage > 0.001f;
+        if (tookDamage)
         {
             ModLog.Info($"[EnemyHealthSync] Local damage scene={context.SceneName}, spawn={context.SpawnPointId}, generation={current}, damage={damage:0.##}");
             Main.Multiplayer.NetworkManager.SendEnemyHealth(context.SceneName, context.SpawnPointId, current, damage);
         }
 
-        if (context.StartingState != EntityStates.Hurt && context.Enemy.entityCurrentState == EntityStates.Hurt)
+        bool enteredHurtState = context.StartingState != EntityStates.Hurt && context.Enemy.entityCurrentState == EntityStates.Hurt;
+        bool handlerNeedsHitCue = tookDamage && EnemySyncManager.TryGetHandler(context.Enemy, out EnemySyncHandler handler) && handler.SyncHitOnDamage;
+        if (enteredHurtState || handlerNeedsHitCue)
             Main.Multiplayer.NetworkManager.SendEnemyHit(context.SceneName, context.SpawnPointId, current, (byte)context.Enemy.Status.Orientation);
     }
 

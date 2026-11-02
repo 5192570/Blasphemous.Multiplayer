@@ -18,6 +18,7 @@ internal abstract class EnemySyncHandler : MonoBehaviour
     protected virtual void OnAttach() { }
 
     internal abstract bool IsWalking { get; }
+    internal abstract bool SyncHitOnDamage { get; }
     internal abstract void SetAuthority(bool authority);
     internal abstract void SetTarget(GameObject target);
     internal abstract void ApplySnapshot(byte orientation, byte state, bool walking);

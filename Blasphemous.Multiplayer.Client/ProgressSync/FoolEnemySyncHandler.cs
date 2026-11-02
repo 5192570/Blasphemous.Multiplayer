@@ -13,6 +13,7 @@ internal sealed class FoolEnemySyncHandler : EnemySyncHandler
     protected override void OnAttach() => _fool = Enemy as Fool;
 
     internal override bool IsWalking => _fool != null && _fool.Input != null && Mathf.Abs(_fool.Input.HorizontalInput) > 0.01f;
+    internal override bool SyncHitOnDamage => false;
 
     internal override void SetAuthority(bool authority)
     {

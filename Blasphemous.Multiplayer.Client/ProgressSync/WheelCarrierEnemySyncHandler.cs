@@ -13,6 +13,7 @@ internal sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     protected override void OnAttach() => _wheelCarrier = Enemy as WheelCarrier;
 
     internal override bool IsWalking => _wheelCarrier != null && _wheelCarrier.Input != null && Mathf.Abs(_wheelCarrier.Input.HorizontalInput) > 0.01f;
+    internal override bool SyncHitOnDamage => true;
 
     internal override void SetAuthority(bool authority)
     {

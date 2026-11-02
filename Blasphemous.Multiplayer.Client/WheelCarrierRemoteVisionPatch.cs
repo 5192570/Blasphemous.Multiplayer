@@ -20,7 +20,7 @@ internal static class WheelCarrierRemoteVisionPatch
 
     private static void Postfix(VisionCone __instance, Transform t, string targetLayer, ref bool __result)
     {
-        if (__result || __instance == null || t == null || targetLayer != "Penitent")
+        if (__instance == null || t == null || targetLayer != "Penitent")
             return;
 
         WheelCarrier wheelCarrier = __instance.GetComponentInParent<WheelCarrier>();

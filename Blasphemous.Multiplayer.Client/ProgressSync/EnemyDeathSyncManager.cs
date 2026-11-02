@@ -14,11 +14,12 @@ using UnityEngine;
 namespace Blasphemous.Multiplayer.Client.ProgressSync;
 
 /// <summary>
-/// Synchronizes enemy death only. Enemy health and intermediate damage are intentionally local.
+/// Synchronizes Fool health snapshots and enemy death events for the current scene.
 /// </summary>
 public static class EnemyDeathSyncManager
 {
     private static readonly Dictionary<string, int> generations = new Dictionary<string, int>();
+    private static readonly Dictionary<string, PendingEnemyHealth> pendingEnemyHealth = new Dictionary<string, PendingEnemyHealth>();
     private static bool applyingRemoteDeath;
 
     internal static bool TryCaptureLocalHit(EnemyDamageArea damageArea, Hit hit, out EnemyDamageContext context)
@@ -106,16 +107,40 @@ public static class EnemyDeathSyncManager
         fool.entityCurrentState = EntityStates.Hurt;
     }
 
-    public static void ApplyRemotePosition(string sceneName, string spawnPointId, int generation, Vector3 position, byte orientation, byte state, bool walking)
+    public static void ApplyRemotePosition(string sceneName, string spawnPointId, int generation, Vector3 position, byte orientation, byte state, bool walking, float currentHealth)
     {
-        if (orientation > 1 || state > 4 || !TryGetSpawnedFool(sceneName, spawnPointId, generation, out Fool fool)) return;
+        if (orientation > 1 || state > 4 || currentHealth <= 0f || float.IsNaN(currentHealth) || float.IsInfinity(currentHealth) ||
+            string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 ||
+            Core.LevelManager.currentLevel == null || Core.LevelManager.currentLevel.LevelName != sceneName ||
+            GetGeneration(MakeGenerationKey(sceneName, spawnPointId)) != generation) return;
+
+        string key = MakeGenerationKey(sceneName, spawnPointId);
+        pendingEnemyHealth[key] = new PendingEnemyHealth(generation, currentHealth);
+
+        if (!TryFindSpawnPoint(sceneName, spawnPointId, out EnemySpawnPoint point) || !(point.SpawnedEnemy is Fool fool) || fool.Status.Dead)
+            return;
+
         FoolMovementSync sync = fool.GetComponent<FoolMovementSync>();
         if (sync == null)
         {
             sync = fool.gameObject.AddComponent<FoolMovementSync>();
             sync.Attach(fool);
         }
-        sync.ApplySnapshot(position, orientation, state, walking);
+        sync.ApplySnapshot(position, orientation, state, walking, currentHealth);
+        pendingEnemyHealth.Remove(key);
+    }
+
+    internal static bool TryTakePendingRemoteHealth(Fool fool, int generation, out float currentHealth)
+    {
+        currentHealth = 0f;
+        if (fool == null || !TryGetSyncIdentity(fool, out string sceneName, out string spawnPointId, out int currentGeneration) ||
+            currentGeneration != generation) return false;
+
+        string key = MakeGenerationKey(sceneName, spawnPointId);
+        if (!pendingEnemyHealth.TryGetValue(key, out PendingEnemyHealth pending) || pending.Generation != generation) return false;
+        pendingEnemyHealth.Remove(key);
+        currentHealth = pending.CurrentHealth;
+        return true;
     }
 
     public static void ApplyRemoteDamage(string sceneName, string spawnPointId, int generation, float damage)
@@ -237,7 +262,20 @@ public static class EnemyDeathSyncManager
     public static void ResetSession()
     {
         generations.Clear();
+        pendingEnemyHealth.Clear();
         applyingRemoteDeath = false;
+    }
+
+    private readonly struct PendingEnemyHealth
+    {
+        internal readonly int Generation;
+        internal readonly float CurrentHealth;
+
+        internal PendingEnemyHealth(int generation, float currentHealth)
+        {
+            Generation = generation;
+            CurrentHealth = currentHealth;
+        }
     }
 
     private static int GetGeneration(string key)

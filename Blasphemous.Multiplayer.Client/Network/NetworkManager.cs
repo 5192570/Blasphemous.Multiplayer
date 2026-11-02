@@ -530,17 +530,18 @@ namespace Blasphemous.Multiplayer.Client.Network
             catch (Exception ex) { ModLog.Warn($"Ignored malformed enemy hit packet: {ex.GetType().Name}: {ex.Message}"); }
         }
 
-        public void SendEnemyPosition(string sceneName, string spawnPointId, int generation, Vector3 position, byte orientation, byte state, bool walking)
+        public void SendEnemyPosition(string sceneName, string spawnPointId, int generation, Vector3 position, byte orientation, byte state, bool walking, float currentHealth)
         {
             if (!IsConnected || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || orientation > 1 || state > 4 ||
                 float.IsNaN(position.x) || float.IsInfinity(position.x) || float.IsNaN(position.y) || float.IsInfinity(position.y) ||
-                float.IsNaN(position.z) || float.IsInfinity(position.z)) return;
+                float.IsNaN(position.z) || float.IsInfinity(position.z) || currentHealth <= 0f ||
+                float.IsNaN(currentHealth) || float.IsInfinity(currentHealth)) return;
             using (MemoryStream stream = new MemoryStream())
             using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8))
             {
                 writer.Write(sceneName); writer.Write(spawnPointId); writer.Write(generation);
                 writer.Write(position.x); writer.Write(position.y); writer.Write(position.z);
-                writer.Write(orientation); writer.Write(state); writer.Write(walking);
+                writer.Write(orientation); writer.Write(state); writer.Write(walking); writer.Write(currentHealth);
                 QueueMesssage(stream.ToArray(), NetworkType.EnemyPosition);
             }
         }
@@ -556,10 +557,12 @@ namespace Blasphemous.Multiplayer.Client.Network
                     int generation = reader.ReadInt32();
                     Vector3 position = new Vector3(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
                     byte orientation = reader.ReadByte(); byte state = reader.ReadByte(); bool walking = reader.ReadBoolean();
-                    if (stream.Position != stream.Length || generation < 0 || orientation > 1 || state > 4 ||
+                    float currentHealth = reader.ReadSingle();
+                    if (stream.Position != stream.Length || generation < 0 || orientation > 1 || state > 4 || currentHealth <= 0f ||
+                        float.IsNaN(currentHealth) || float.IsInfinity(currentHealth) ||
                         float.IsNaN(position.x) || float.IsInfinity(position.x) || float.IsNaN(position.y) || float.IsInfinity(position.y) ||
                         float.IsNaN(position.z) || float.IsInfinity(position.z)) return;
-                    EnemyDeathSyncManager.ApplyRemotePosition(sceneName, spawnPointId, generation, position, orientation, state, walking);
+                    EnemyDeathSyncManager.ApplyRemotePosition(sceneName, spawnPointId, generation, position, orientation, state, walking, currentHealth);
                 }
             }
             catch (Exception ex) { ModLog.Warn($"Ignored malformed enemy position packet: {ex.GetType().Name}: {ex.Message}"); }
@@ -648,6 +651,6 @@ namespace Blasphemous.Multiplayer.Client.Network
         public delegate void ConnectDelegate(bool success, RefusalType refusal);
         public event ConnectDelegate OnConnect;
 
-        private const byte PROTOCOL_VERSION = 7;
+        private const byte PROTOCOL_VERSION = 8;
     }
 }

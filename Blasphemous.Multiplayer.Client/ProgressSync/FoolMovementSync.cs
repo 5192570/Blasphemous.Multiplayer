@@ -81,19 +81,24 @@ public sealed class FoolMovementSync : MonoBehaviour
                 _nextSnapshot = Time.unscaledTime + SnapshotInterval;
                 bool walking = _fool.Input != null && Mathf.Abs(_fool.Input.HorizontalInput) > 0.01f;
                 Main.Multiplayer.NetworkManager.SendEnemyPosition(_sceneName, _spawnPointId, _generation, _fool.transform.position,
-                    (byte)_fool.Status.Orientation, (byte)_fool.entityCurrentState, walking);
+                    (byte)_fool.Status.Orientation, (byte)_fool.entityCurrentState, walking, _fool.Stats.Life.Current);
             }
         }
-        else if (_hasSnapshot)
+        else
         {
+            if (EnemyDeathSyncManager.TryTakePendingRemoteHealth(_fool, _generation, out float pendingHealth))
+                ApplyHealth(pendingHealth);
+
+            if (!_hasSnapshot) return;
             float blend = 1f - Mathf.Exp(-18f * Time.deltaTime);
             _fool.transform.position = Vector3.Lerp(_fool.transform.position, _targetPosition, blend);
         }
     }
 
-    internal void ApplySnapshot(Vector3 position, byte orientation, byte state, bool walking)
+    internal void ApplySnapshot(Vector3 position, byte orientation, byte state, bool walking, float currentHealth)
     {
         if (_isAuthority || _fool == null) return;
+        ApplyHealth(currentHealth);
         _targetPosition = position;
         _hasSnapshot = true;
         _fool.SetOrientation((EntityOrientation)orientation);
@@ -103,6 +108,14 @@ public sealed class FoolMovementSync : MonoBehaviour
             if (walking && state != (byte)EntityStates.Hurt) _fool.AnimatorInyector.Walk();
             else _fool.AnimatorInyector.StopWalk();
         }
+    }
+
+    private void ApplyHealth(float currentHealth)
+    {
+        if (_fool == null || currentHealth <= 0f || float.IsNaN(currentHealth) || float.IsInfinity(currentHealth)) return;
+        float maximumHealth = _fool.Stats.Life.Final;
+        if (maximumHealth <= 0f) return;
+        _fool.SetHealth(Mathf.Min(currentHealth, maximumHealth));
     }
 
     private void RefreshIdentity()

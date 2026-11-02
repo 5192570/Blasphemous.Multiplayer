@@ -857,8 +857,10 @@ public class Server
                 sceneName = reader.ReadString(); string spawnPointId = reader.ReadString();
                 int generation = reader.ReadInt32(); float x = reader.ReadSingle(); float y = reader.ReadSingle(); float z = reader.ReadSingle();
                 byte orientation = reader.ReadByte(); byte state = reader.ReadByte(); bool walking = reader.ReadBoolean();
+                float currentHealth = reader.ReadSingle();
                 if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 ||
-                    orientation > 1 || state > 4 || float.IsNaN(x) || float.IsInfinity(x) || float.IsNaN(y) || float.IsInfinity(y) || float.IsNaN(z) || float.IsInfinity(z)) return;
+                    orientation > 1 || state > 4 || currentHealth <= 0f || float.IsNaN(currentHealth) || float.IsInfinity(currentHealth) ||
+                    float.IsNaN(x) || float.IsInfinity(x) || float.IsNaN(y) || float.IsInfinity(y) || float.IsNaN(z) || float.IsInfinity(z)) return;
             }
             PlayerInfo current = getCurrentPlayer(playerIp);
             if (current == null || current.sceneName != sceneName) return;
@@ -869,5 +871,5 @@ public class Server
         catch (Exception ex) { Logger.Warn($"Ignored malformed enemy position packet: {ex.GetType().Name}: {ex.Message}"); }
     }
 
-    private const byte PROTOCOL_VERSION = 7;
+    private const byte PROTOCOL_VERSION = 8;
 }

@@ -19,4 +19,6 @@ public enum NetworkType
     WorldReset = 13,
     EnemyDeath = 14,
     EnemyHealth = 15,
+    EnemyHit = 16,
+    EnemyPosition = 17,
 }

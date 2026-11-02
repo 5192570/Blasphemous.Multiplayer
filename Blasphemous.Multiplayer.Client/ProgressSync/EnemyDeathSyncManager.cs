@@ -6,6 +6,7 @@ using Framework.Managers;
 using Gameplay.GameControllers.Enemies.Framework.Damage;
 using Gameplay.GameControllers.Enemies.Fool;
 using Gameplay.GameControllers.Entities;
+using Framework.FrameworkCore;
 using HarmonyLib;
 using Tools.Level.Layout;
 using UnityEngine;
@@ -75,6 +76,45 @@ public static class EnemyDeathSyncManager
             ModLog.Info($"[EnemyHealthSync] Local damage scene={context.SceneName}, spawn={context.SpawnPointId}, generation={current}, damage={damage:0.##}");
             Main.Multiplayer.NetworkManager.SendEnemyHealth(context.SceneName, context.SpawnPointId, current, damage);
         }
+
+        Main.Multiplayer.NetworkManager.SendEnemyHit(context.SceneName, context.SpawnPointId, current, (byte)context.Enemy.Status.Orientation);
+    }
+
+    internal static bool TryGetSyncIdentity(Fool fool, out string sceneName, out string spawnPointId, out int generation)
+    {
+        sceneName = Core.LevelManager.currentLevel == null ? null : Core.LevelManager.currentLevel.LevelName;
+        spawnPointId = null; generation = -1;
+        if (fool == null || string.IsNullOrEmpty(sceneName) || !TryFindSpawnPoint(sceneName, fool, out EnemySpawnPoint point, out spawnPointId)) return false;
+        generation = GetGeneration(MakeGenerationKey(sceneName, spawnPointId));
+        return true;
+    }
+
+    private static bool TryGetSpawnedFool(string sceneName, string spawnPointId, int generation, out Fool fool)
+    {
+        fool = null;
+        if (Core.LevelManager.currentLevel == null || Core.LevelManager.currentLevel.LevelName != sceneName || generation < 0 ||
+            GetGeneration(MakeGenerationKey(sceneName, spawnPointId)) != generation || !TryFindSpawnPoint(sceneName, spawnPointId, out EnemySpawnPoint point)) return false;
+        fool = point.SpawnedEnemy as Fool;
+        return fool != null && !fool.Status.Dead;
+    }
+
+    public static void ApplyRemoteHit(string sceneName, string spawnPointId, int generation, byte orientation)
+    {
+        if (orientation > 1 || !TryGetSpawnedFool(sceneName, spawnPointId, generation, out Fool fool)) return;
+        fool.SetOrientation((EntityOrientation)orientation);
+        fool.entityCurrentState = EntityStates.Hurt;
+    }
+
+    public static void ApplyRemotePosition(string sceneName, string spawnPointId, int generation, Vector3 position, byte orientation, byte state, bool walking)
+    {
+        if (orientation > 1 || state > 4 || !TryGetSpawnedFool(sceneName, spawnPointId, generation, out Fool fool)) return;
+        FoolMovementSync sync = fool.GetComponent<FoolMovementSync>();
+        if (sync == null)
+        {
+            sync = fool.gameObject.AddComponent<FoolMovementSync>();
+            sync.Attach(fool);
+        }
+        sync.ApplySnapshot(position, orientation, state, walking);
     }
 
     public static void ApplyRemoteDamage(string sceneName, string spawnPointId, int generation, float damage)

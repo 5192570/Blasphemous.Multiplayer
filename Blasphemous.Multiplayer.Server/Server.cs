@@ -114,6 +114,8 @@ public class Server
                 case NetworkType.WorldReset:   receivePlayerWorldReset(e.ip, data); break;
                 case NetworkType.EnemyDeath:   receivePlayerEnemyDeath(e.ip, data); break;
                 case NetworkType.EnemyHealth:  receivePlayerEnemyHealth(e.ip, data); break;
+                case NetworkType.EnemyHit:     receivePlayerEnemyHit(e.ip, data); break;
+                case NetworkType.EnemyPosition: receivePlayerEnemyPosition(e.ip, data); break;
                 default:
                     Logger.Error($"Data type '{type}' is not valid"); break;
             }
@@ -823,5 +825,49 @@ public class Server
         }
     }
 
-    private const byte PROTOCOL_VERSION = 6;
+    private void receivePlayerEnemyHit(string playerIp, byte[] data)
+    {
+        try
+        {
+            string sceneName;
+            using (MemoryStream stream = new MemoryStream(data))
+            using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
+            {
+                sceneName = reader.ReadString(); string spawnPointId = reader.ReadString();
+                int generation = reader.ReadInt32(); byte orientation = reader.ReadByte();
+                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || orientation > 1) return;
+            }
+            PlayerInfo current = getCurrentPlayer(playerIp);
+            if (current == null || current.sceneName != sceneName) return;
+            foreach (string ip in connectedPlayers.Keys)
+                if (playerIp != ip && current.isInSameScene(connectedPlayers[ip]) && connectedPlayers[ip].sceneName == sceneName)
+                    Send(ip, data, NetworkType.EnemyHit);
+        }
+        catch (Exception ex) { Logger.Warn($"Ignored malformed enemy hit packet: {ex.GetType().Name}: {ex.Message}"); }
+    }
+
+    private void receivePlayerEnemyPosition(string playerIp, byte[] data)
+    {
+        try
+        {
+            string sceneName;
+            using (MemoryStream stream = new MemoryStream(data))
+            using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
+            {
+                sceneName = reader.ReadString(); string spawnPointId = reader.ReadString();
+                int generation = reader.ReadInt32(); float x = reader.ReadSingle(); float y = reader.ReadSingle(); float z = reader.ReadSingle();
+                byte orientation = reader.ReadByte(); byte state = reader.ReadByte(); bool walking = reader.ReadBoolean();
+                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 ||
+                    orientation > 1 || state > 4 || float.IsNaN(x) || float.IsInfinity(x) || float.IsNaN(y) || float.IsInfinity(y) || float.IsNaN(z) || float.IsInfinity(z)) return;
+            }
+            PlayerInfo current = getCurrentPlayer(playerIp);
+            if (current == null || current.sceneName != sceneName) return;
+            foreach (string ip in connectedPlayers.Keys)
+                if (playerIp != ip && current.isInSameScene(connectedPlayers[ip]) && connectedPlayers[ip].sceneName == sceneName)
+                    Send(ip, data, NetworkType.EnemyPosition);
+        }
+        catch (Exception ex) { Logger.Warn($"Ignored malformed enemy position packet: {ex.GetType().Name}: {ex.Message}"); }
+    }
+
+    private const byte PROTOCOL_VERSION = 7;
 }

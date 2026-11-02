@@ -154,6 +154,8 @@ namespace Blasphemous.Multiplayer.Client.Network
                         case NetworkType.WorldReset: ReceiveWorldReset(messageData); break;
                         case NetworkType.EnemyDeath: ReceiveEnemyDeath(messageData); break;
                         case NetworkType.EnemyHealth: ReceiveEnemyHealth(messageData); break;
+                        case NetworkType.EnemyHit: ReceiveEnemyHit(messageData); break;
+                        case NetworkType.EnemyPosition: ReceiveEnemyPosition(messageData); break;
                     }
                     startIdx += 3 + length;
                 }
@@ -501,6 +503,68 @@ namespace Blasphemous.Multiplayer.Client.Network
             }
         }
 
+        public void SendEnemyHit(string sceneName, string spawnPointId, int generation, byte orientation)
+        {
+            if (!IsConnected || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || orientation > 1) return;
+            using (MemoryStream stream = new MemoryStream())
+            using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8))
+            {
+                writer.Write(sceneName); writer.Write(spawnPointId); writer.Write(generation); writer.Write(orientation);
+                QueueMesssage(stream.ToArray(), NetworkType.EnemyHit);
+            }
+        }
+
+        private void ReceiveEnemyHit(byte[] data)
+        {
+            try
+            {
+                using (MemoryStream stream = new MemoryStream(data))
+                using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
+                {
+                    string sceneName = reader.ReadString(); string spawnPointId = reader.ReadString();
+                    int generation = reader.ReadInt32(); byte orientation = reader.ReadByte();
+                    if (stream.Position != stream.Length || generation < 0 || orientation > 1) return;
+                    EnemyDeathSyncManager.ApplyRemoteHit(sceneName, spawnPointId, generation, orientation);
+                }
+            }
+            catch (Exception ex) { ModLog.Warn($"Ignored malformed enemy hit packet: {ex.GetType().Name}: {ex.Message}"); }
+        }
+
+        public void SendEnemyPosition(string sceneName, string spawnPointId, int generation, Vector3 position, byte orientation, byte state, bool walking)
+        {
+            if (!IsConnected || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || orientation > 1 || state > 4 ||
+                float.IsNaN(position.x) || float.IsInfinity(position.x) || float.IsNaN(position.y) || float.IsInfinity(position.y) ||
+                float.IsNaN(position.z) || float.IsInfinity(position.z)) return;
+            using (MemoryStream stream = new MemoryStream())
+            using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8))
+            {
+                writer.Write(sceneName); writer.Write(spawnPointId); writer.Write(generation);
+                writer.Write(position.x); writer.Write(position.y); writer.Write(position.z);
+                writer.Write(orientation); writer.Write(state); writer.Write(walking);
+                QueueMesssage(stream.ToArray(), NetworkType.EnemyPosition);
+            }
+        }
+
+        private void ReceiveEnemyPosition(byte[] data)
+        {
+            try
+            {
+                using (MemoryStream stream = new MemoryStream(data))
+                using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
+                {
+                    string sceneName = reader.ReadString(); string spawnPointId = reader.ReadString();
+                    int generation = reader.ReadInt32();
+                    Vector3 position = new Vector3(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
+                    byte orientation = reader.ReadByte(); byte state = reader.ReadByte(); bool walking = reader.ReadBoolean();
+                    if (stream.Position != stream.Length || generation < 0 || orientation > 1 || state > 4 ||
+                        float.IsNaN(position.x) || float.IsInfinity(position.x) || float.IsNaN(position.y) || float.IsInfinity(position.y) ||
+                        float.IsNaN(position.z) || float.IsInfinity(position.z)) return;
+                    EnemyDeathSyncManager.ApplyRemotePosition(sceneName, spawnPointId, generation, position, orientation, state, walking);
+                }
+            }
+            catch (Exception ex) { ModLog.Warn($"Ignored malformed enemy position packet: {ex.GetType().Name}: {ex.Message}"); }
+        }
+
         public void SendEnemyDeath(string sceneName, string spawnPointId, int generation)
         {
             if (!IsConnected || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0) return;
@@ -584,6 +648,6 @@ namespace Blasphemous.Multiplayer.Client.Network
         public delegate void ConnectDelegate(bool success, RefusalType refusal);
         public event ConnectDelegate OnConnect;
 
-        private const byte PROTOCOL_VERSION = 6;
+        private const byte PROTOCOL_VERSION = 7;
     }
 }

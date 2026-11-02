@@ -14,12 +14,13 @@ using UnityEngine;
 namespace Blasphemous.Multiplayer.Client.ProgressSync;
 
 /// <summary>
-/// Synchronizes Fool health snapshots and enemy death events for the current scene.
+/// Synchronizes Fool health snapshots and enemy death events across the multiplayer session.
 /// </summary>
 public static class EnemyDeathSyncManager
 {
     private static readonly Dictionary<string, int> generations = new Dictionary<string, int>();
     private static readonly Dictionary<string, PendingEnemyHealth> pendingEnemyHealth = new Dictionary<string, PendingEnemyHealth>();
+    private static readonly Dictionary<string, int> pendingRemoteDeaths = new Dictionary<string, int>();
     private static bool applyingRemoteDeath;
 
     internal static bool TryCaptureLocalHit(EnemyDamageArea damageArea, Hit hit, out EnemyDamageContext context)
@@ -173,6 +174,9 @@ public static class EnemyDeathSyncManager
             // other's packets. Their combined damage may be lethal, so promote that result
             // through the same native death path used by the explicit death packet.
             ApplyRemoteDeath(sceneName, spawnPointId, generation);
+            // This client may be the first to observe lethal combined damage from multiple
+            // peers. Rebroadcast the resulting death so every session member advances state.
+            Main.Multiplayer.NetworkManager.SendEnemyDeath(sceneName, spawnPointId, generation);
             return;
         }
 
@@ -184,85 +188,122 @@ public static class EnemyDeathSyncManager
     {
         if (applyingRemoteDeath || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0)
             return;
-        if (Core.LevelManager.currentLevel == null || Core.LevelManager.currentLevel.LevelName != sceneName)
-            return;
 
         string key = MakeGenerationKey(sceneName, spawnPointId);
         int current = GetGeneration(key);
         if (current != generation)
         {
+            if (pendingRemoteDeaths.TryGetValue(key, out int pendingGeneration) && pendingGeneration == generation)
+                return;
+
             ModLog.Warn($"[EnemyDeathSync] Ignored stale/duplicate death scene={sceneName}, spawn={spawnPointId}, packetGeneration={generation}, currentGeneration={current}");
             return;
         }
 
-        if (!TryFindSpawnPoint(sceneName, spawnPointId, out EnemySpawnPoint spawnPoint))
-        {
-            ModLog.Warn($"[EnemyDeathSync] Spawn point not found or identity is ambiguous: scene={sceneName}, spawn={spawnPointId}");
-            return;
-        }
-
-        // Advance before invoking native death callbacks so a duplicate packet cannot kill a later generation.
+        // Record and advance once, even when the receiver is in another scene. The pending
+        // record survives scene changes and is consumed by CreateEnemy before native spawning.
         generations[key] = current + 1;
+        pendingRemoteDeaths[key] = generation;
+
+        if (Core.LevelManager.currentLevel != null && Core.LevelManager.currentLevel.LevelName == sceneName &&
+            TryFindSpawnPoint(sceneName, spawnPointId, out EnemySpawnPoint spawnPoint))
+            ReconcilePendingDeath(spawnPoint);
+
+        ModLog.Info($"[EnemyDeathSync] Recorded remote death scene={sceneName}, spawn={spawnPointId}, generation={generation}");
+    }
+
+    internal static void ReconcilePendingDeath(EnemySpawnPoint spawnPoint)
+    {
+        if (spawnPoint == null || Core.LevelManager.currentLevel == null)
+            return;
+
+        string sceneName = Core.LevelManager.currentLevel.LevelName;
+        string spawnPointId = BuildSpawnPointId(spawnPoint);
+        string key = MakeGenerationKey(sceneName, spawnPointId);
+        if (!pendingRemoteDeaths.TryGetValue(key, out int generation))
+            return;
+
         Enemy enemy = spawnPoint.SpawnedEnemy;
         if (enemy == null)
         {
-            ModLog.Warn($"[EnemyDeathSync] No spawned enemy for remote death scene={sceneName}, spawn={spawnPointId}");
+            // CreateEnemy reads the consumed list before instantiating its prefab.
+            Core.Logic.EnemySpawner.AddConsumedSpawner(spawnPoint);
+            pendingRemoteDeaths.Remove(key);
+            ModLog.Info($"[EnemyDeathSync] Suppressed defeated enemy spawn scene={sceneName}, spawn={spawnPointId}, generation={generation}");
             return;
         }
 
-        if (!enemy.Status.Dead)
+        pendingRemoteDeaths.Remove(key);
+        ApplyNativeRemoteDeath(sceneName, spawnPointId, generation, enemy);
+    }
+
+    private static void ApplyNativeRemoteDeath(string sceneName, string spawnPointId, int generation, Enemy enemy)
+    {
+        if (enemy == null || enemy.Status.Dead)
+            return;
+
+        applyingRemoteDeath = true;
+        try
         {
-            applyingRemoteDeath = true;
-            try
+            // Preserve native death callbacks so EnemySpawnPoint marks this spawn consumed.
+            enemy.SetHealth(0f);
+            EnemyDamageArea[] damageAreas = enemy.GetComponentsInChildren<EnemyDamageArea>(true);
+            int disabledColliders = 0;
+            foreach (EnemyDamageArea damageArea in damageAreas)
             {
-                // Preserve the game's native death callbacks so the spawn point is marked consumed.
-                enemy.SetHealth(0f);
+                if (damageArea == null)
+                    continue;
 
-                // Remote SetHealth bypasses EnemyDamageArea.TakeDamage's collider cleanup.
-                // Disable every damage area, but leave the enemy active: its native
-                // death behavior needs to run so the normal death animation can play.
-                EnemyDamageArea[] damageAreas = enemy.GetComponentsInChildren<EnemyDamageArea>(true);
-                int disabledColliders = 0;
-                foreach (EnemyDamageArea damageArea in damageAreas)
+                Collider2D damageCollider = damageArea.DamageAreaCollider;
+                if (damageCollider != null && damageCollider.enabled)
                 {
-                    if (damageArea == null)
-                        continue;
-
-                    Collider2D damageCollider = damageArea.DamageAreaCollider;
-                    if (damageCollider != null && damageCollider.enabled)
-                    {
-                        damageCollider.enabled = false;
-                        disabledColliders++;
-                    }
-                }
-
-                if (enemy is Fool fool && fool.Behaviour != null)
-                {
-                    // FoolDeathBehaviour destroys the enemy GameObject when its death animation exits.
-                    fool.Behaviour.Death();
-                    ModLog.Info($"[EnemyDeathSync] Started Fool death animation; disabledColliders={disabledColliders}");
-                }
-                else
-                {
-                    // Other enemy types retain immediate cleanup until their native death-animation
-                    // lifecycles are implemented.
-                    enemy.gameObject.SetActive(false);
-                    ModLog.Info($"[EnemyDeathSync] Remote cleanup disabledColliders={disabledColliders}, enemyDeactivated=true");
+                    damageCollider.enabled = false;
+                    disabledColliders++;
                 }
             }
-            finally
+
+            if (enemy is Fool fool && fool.Behaviour != null)
             {
-                applyingRemoteDeath = false;
+                fool.Behaviour.Death();
+                ModLog.Info($"[EnemyDeathSync] Started Fool death animation; disabledColliders={disabledColliders}");
             }
+            else
+            {
+                enemy.gameObject.SetActive(false);
+                ModLog.Info($"[EnemyDeathSync] Remote cleanup disabledColliders={disabledColliders}, enemyDeactivated=true");
+            }
+        }
+        finally
+        {
+            applyingRemoteDeath = false;
         }
 
         ModLog.Info($"[EnemyDeathSync] Applied remote death scene={sceneName}, spawn={spawnPointId}, generation={generation}");
+    }
+
+    internal static void ClearPendingDeathsForCurrentScene()
+    {
+        if (Core.LevelManager.currentLevel == null)
+            return;
+
+        string prefix = Core.LevelManager.currentLevel.LevelName + "::";
+        List<string> keys = new List<string>();
+        foreach (string key in pendingRemoteDeaths.Keys)
+            if (key.StartsWith(prefix, StringComparison.Ordinal))
+                keys.Add(key);
+
+        foreach (string key in keys)
+            pendingRemoteDeaths.Remove(key);
+
+        if (keys.Count > 0)
+            ModLog.Info($"[EnemyDeathSync] Cleared {keys.Count} pending death(s) for intentional enemy respawn in {Core.LevelManager.currentLevel.LevelName}");
     }
 
     public static void ResetSession()
     {
         generations.Clear();
         pendingEnemyHealth.Clear();
+        pendingRemoteDeaths.Clear();
         applyingRemoteDeath = false;
     }
 
@@ -390,5 +431,14 @@ internal static class EnemyDamageAreaDeathSync_Patch
     private static void Postfix(EnemyDamageContext __state)
     {
         EnemyDeathSyncManager.CompleteLocalHit(__state);
+    }
+}
+[HarmonyPatch(typeof(EnemySpawnPoint), nameof(EnemySpawnPoint.CreateEnemy))]
+internal static class EnemySpawnPointDeathSync_Patch
+{
+    [HarmonyPrefix]
+    private static void Prefix(EnemySpawnPoint __instance)
+    {
+        EnemyDeathSyncManager.ReconcilePendingDeath(__instance);
     }
 }

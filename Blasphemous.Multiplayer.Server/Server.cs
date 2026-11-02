@@ -775,9 +775,11 @@ public class Server
             if (current == null || string.IsNullOrEmpty(sceneName) || current.sceneName != sceneName)
                 return;
 
+            // Enemy deaths are session-wide world state, not scene-local player state.
+            // Peers in other scenes retain the event and reconcile it when they enter.
             foreach (string ip in connectedPlayers.Keys)
             {
-                if (playerIp != ip && current.isInSameScene(connectedPlayers[ip]) && connectedPlayers[ip].sceneName == sceneName)
+                if (playerIp != ip)
                     Send(ip, data, NetworkType.EnemyDeath);
             }
         }

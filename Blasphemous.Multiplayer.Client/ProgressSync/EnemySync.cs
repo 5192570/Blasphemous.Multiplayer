@@ -15,6 +15,7 @@ public sealed class EnemySync : MonoBehaviour
     private const float IdentityRefreshInterval = 0.5f;
     private const float PeerStateGrace = 1.5f;
     private const float PeerSnapshotTimeout = 1f;
+    private const float TargetCommitmentDuration = 1.25f;
 
     private EnemySyncHandler _handler;
     private Enemy _enemy;
@@ -32,6 +33,8 @@ public sealed class EnemySync : MonoBehaviour
     private int _lastPeerSnapshotGeneration = -1;
     private float _lastPeerSnapshot = float.NegativeInfinity;
     private Vector3 _targetPosition;
+    private GameObject _committedTarget;
+    private float _targetCommitmentUntil;
 
     internal void Attach(EnemySyncHandler handler)
     {
@@ -167,6 +170,8 @@ public sealed class EnemySync : MonoBehaviour
         _authorityInitialized = true;
         _isAuthority = authority;
         _handler.SetAuthority(authority);
+        _committedTarget = null;
+        _targetCommitmentUntil = 0f;
         if (authority) _hasSnapshot = false;
         ModLog.Info($"[EnemySync] Authority {(authority ? "local" : "remote-following")} for {_spawnPointId}");
     }
@@ -174,14 +179,40 @@ public sealed class EnemySync : MonoBehaviour
     private void UpdateTarget()
     {
         if (Core.Logic.Penitent == null) return;
+
+        // Keep a valid target for a short window so nearby players cannot make the
+        // authoritative enemy alternate targets on consecutive AI updates.
+        if (_committedTarget != null &&
+            _committedTarget.activeInHierarchy &&
+            Time.unscaledTime < _targetCommitmentUntil &&
+            IsAvailableTarget(_committedTarget))
+            return;
+
         GameObject nearest = Core.Logic.Penitent.gameObject;
         float nearestDistance = Vector2.Distance(_enemy.transform.position, nearest.transform.position);
         foreach (OtherPlayerScript player in Main.Multiplayer.OtherPlayerManager.AllActivePlayers)
         {
-            if (player == null) continue;
+            if (player == null || !player.gameObject.activeInHierarchy) continue;
             float distance = Vector2.Distance(_enemy.transform.position, player.transform.position);
             if (distance < nearestDistance) { nearestDistance = distance; nearest = player.gameObject; }
         }
-        _handler.SetTarget(nearest);
+
+        if (nearest == null || !nearest.activeInHierarchy) return;
+        if (_committedTarget != nearest)
+        {
+            _committedTarget = nearest;
+            _handler.SetTarget(nearest);
+        }
+        _targetCommitmentUntil = Time.unscaledTime + TargetCommitmentDuration;
+    }
+
+    private bool IsAvailableTarget(GameObject target)
+    {
+        if (Core.Logic.Penitent != null && Core.Logic.Penitent.gameObject == target) return true;
+        foreach (OtherPlayerScript player in Main.Multiplayer.OtherPlayerManager.AllActivePlayers)
+        {
+            if (player != null && player.gameObject == target && player.gameObject.activeInHierarchy) return true;
+        }
+        return false;
     }
 }

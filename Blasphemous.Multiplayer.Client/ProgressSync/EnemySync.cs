@@ -15,7 +15,6 @@ public sealed class EnemySync : MonoBehaviour
     private const float IdentityRefreshInterval = 0.5f;
     private const float PeerStateGrace = 1.5f;
     private const float PeerSnapshotTimeout = 1f;
-    private const float TargetCommitmentDuration = 1.25f;
 
     private EnemySyncHandler _handler;
     private Enemy _enemy;
@@ -206,7 +205,7 @@ public sealed class EnemySync : MonoBehaviour
             _committedTarget = nearest;
             _handler.SetTarget(nearest);
         }
-        _targetCommitmentUntil = Time.unscaledTime + TargetCommitmentDuration;
+        _targetCommitmentUntil = Time.unscaledTime + _handler.TargetCommitmentDuration;
     }
 
     private bool IsAvailableTarget(GameObject target)

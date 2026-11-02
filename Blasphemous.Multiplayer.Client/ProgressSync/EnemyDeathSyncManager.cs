@@ -281,22 +281,16 @@ public static class EnemyDeathSyncManager
         ModLog.Info($"[EnemyDeathSync] Applied remote death scene={sceneName}, spawn={spawnPointId}, generation={generation}");
     }
 
-    internal static void ClearPendingDeathsForCurrentScene()
+    internal static void ClearPendingDeathsForWorldReset()
     {
-        if (Core.LevelManager.currentLevel == null)
-            return;
+        // RespawnDeadEnemies clears the game's shared consumed-spawn list globally.
+        // Pending remote deaths must therefore be cleared across every scene, while
+        // generation counters remain advanced so newly spawned enemies use the
+        // same generation on every client.
+        int clearedCount = pendingRemoteDeaths.Count;
+        pendingRemoteDeaths.Clear();
 
-        string prefix = Core.LevelManager.currentLevel.LevelName + "::";
-        List<string> keys = new List<string>();
-        foreach (string key in pendingRemoteDeaths.Keys)
-            if (key.StartsWith(prefix, StringComparison.Ordinal))
-                keys.Add(key);
-
-        foreach (string key in keys)
-            pendingRemoteDeaths.Remove(key);
-
-        if (keys.Count > 0)
-            ModLog.Info($"[EnemyDeathSync] Cleared {keys.Count} pending death(s) for intentional enemy respawn in {Core.LevelManager.currentLevel.LevelName}");
+        ModLog.Info($"[EnemyDeathSync] Cleared {clearedCount} pending remote death(s) across all scenes for world reset; generation counters preserved.");
     }
 
     public static void ResetSession()

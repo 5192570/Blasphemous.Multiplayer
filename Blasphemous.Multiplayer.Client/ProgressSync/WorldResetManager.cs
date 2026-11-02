@@ -42,7 +42,7 @@ internal static class RespawnDeadEnemiesSync_Patch
     {
         // RespawnDeadEnemies is the game's intentional global spawn reset. Pending remote
         // deaths for this scene must not suppress the enemies that this reset recreates.
-        EnemyDeathSyncManager.ClearPendingDeathsForCurrentScene();
+        EnemyDeathSyncManager.ClearPendingDeathsForWorldReset();
     }
 
     public static void Postfix()

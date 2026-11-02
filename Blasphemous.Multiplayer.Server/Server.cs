@@ -1,3 +1,4 @@
+using Blasphemous.Multiplayer.Common;
 using Blasphemous.Multiplayer.Common.Enums;
 using Blasphemous.Multiplayer.Server.Models;
 using SimpleTCP;
@@ -479,7 +480,7 @@ public class Server
         byte protocol = data[idx++];
 
         // Ensure the protocol version matches
-        if (protocol != PROTOCOL_VERSION)
+        if (protocol != Protocol.VERSION)
         {
             Logger.Warn("Player connection rejected: Protocol version doesn't match");
             sendPlayerIntro(playerIp, RefusalType.Protocol);
@@ -893,5 +894,4 @@ public class Server
         catch (Exception ex) { Logger.Warn($"Ignored malformed enemy position packet: {ex.GetType().Name}: {ex.Message}"); }
     }
 
-    private const byte PROTOCOL_VERSION = 9;
 }

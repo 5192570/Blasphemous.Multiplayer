@@ -2,6 +2,7 @@ using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Client.Players;
 using Blasphemous.Multiplayer.Client.ProgressSync;
 using Blasphemous.Multiplayer.Client.PvP.Models;
+using Blasphemous.Multiplayer.Common;
 using Blasphemous.Multiplayer.Common.Enums;
 using Framework.Managers;
 using SimpleTCP;
@@ -350,7 +351,7 @@ namespace Blasphemous.Multiplayer.Client.Network
         public void SendIntro(string room, string player, string password, byte team)
         {
             var bytes = new List<byte>();
-            bytes.Add(PROTOCOL_VERSION);
+            bytes.Add(Protocol.VERSION);
 
             bytes.Add((byte)room.Length);
             bytes.AddRange(Encoding.UTF8.GetBytes(room));
@@ -683,6 +684,5 @@ namespace Blasphemous.Multiplayer.Client.Network
         public delegate void ConnectDelegate(bool success, RefusalType refusal);
         public event ConnectDelegate OnConnect;
 
-        private const byte PROTOCOL_VERSION = 8;
     }
 }

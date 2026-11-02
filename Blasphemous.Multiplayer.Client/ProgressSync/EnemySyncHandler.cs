@@ -8,6 +8,9 @@ public abstract class EnemySyncHandler : MonoBehaviour
 {
     internal Enemy Enemy { get; private set; }
 
+    // Individual handlers can tune how long their enemy commits to a selected player.
+    internal virtual float TargetCommitmentDuration => 1.25f;
+
     internal void Attach(Enemy enemy)
     {
         if (enemy == null) return;

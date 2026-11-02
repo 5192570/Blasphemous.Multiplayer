@@ -1,14 +1,13 @@
 using System.Globalization;
 using Framework.FrameworkCore;
 using Framework.FrameworkCore.Attributes;
-using Gameplay.GameControllers.Enemies.Fool;
 using Gameplay.GameControllers.Entities;
 using UnityEngine;
 
 namespace Blasphemous.Multiplayer.Client.ProgressSync;
 
 /// <summary>
-/// Attaches the temporary HP debug label to Fool entities as they enter a scene.
+/// Attaches the temporary HP debug label to every enemy as it enters a scene.
 /// </summary>
 internal static class EnemyHpDebugDisplayManager
 {
@@ -34,15 +33,15 @@ internal static class EnemyHpDebugDisplayManager
 
     private static void Attach(Entity entity)
     {
-        if (!IsGameplayScene() || !(entity is Fool fool) || fool == null ||
-            !fool.gameObject.activeInHierarchy || fool.Status.Dead)
+        if (!IsGameplayScene() || !(entity is Enemy enemy) || enemy == null ||
+            !enemy.gameObject.activeInHierarchy || enemy.Status.Dead)
             return;
 
-        EnemyHpDebugDisplay display = fool.GetComponent<EnemyHpDebugDisplay>();
+        EnemyHpDebugDisplay display = enemy.GetComponent<EnemyHpDebugDisplay>();
         if (display == null)
-            display = fool.gameObject.AddComponent<EnemyHpDebugDisplay>();
+            display = enemy.gameObject.AddComponent<EnemyHpDebugDisplay>();
 
-        display.Attach(fool);
+        display.Attach(enemy);
     }
 
     private static bool IsGameplayScene()
@@ -52,19 +51,19 @@ internal static class EnemyHpDebugDisplayManager
 }
 
 /// <summary>
-/// Displays a Fool's native HP above it. This is diagnostic UI only and does not
+/// Displays an enemy's native HP above it. This is diagnostic UI only and does not
 /// read from or write to the multiplayer network.
 /// </summary>
 public sealed class EnemyHpDebugDisplay : MonoBehaviour
 {
     private const float VerticalPadding = 0.4f;
 
-    private Fool _owner;
+    private Enemy _owner;
     private Life _life;
     private Transform _labelTransform;
     private TextMesh _text;
 
-    internal void Attach(Fool owner)
+    internal void Attach(Enemy owner)
     {
         if (owner == null)
             return;

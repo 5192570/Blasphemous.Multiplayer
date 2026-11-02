@@ -2,6 +2,7 @@ using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Client.Players;
 using Blasphemous.Multiplayer.Client.ProgressSync;
 using Blasphemous.Multiplayer.Client.PvP.Models;
+using Blasphemous.Multiplayer.Common;
 using Blasphemous.Multiplayer.Common.Enums;
 using Framework.Managers;
 using SimpleTCP;
@@ -156,6 +157,7 @@ namespace Blasphemous.Multiplayer.Client.Network
                         case NetworkType.EnemyHealth: ReceiveEnemyHealth(messageData); break;
                         case NetworkType.EnemyHit: ReceiveEnemyHit(messageData); break;
                         case NetworkType.EnemyPosition: ReceiveEnemyPosition(messageData); break;
+                        case NetworkType.PlayerImpact: ReceivePlayerImpact(messageData); break;
                     }
                     startIdx += 3 + length;
                 }
@@ -349,7 +351,7 @@ namespace Blasphemous.Multiplayer.Client.Network
         public void SendIntro(string room, string player, string password, byte team)
         {
             var bytes = new List<byte>();
-            bytes.Add(PROTOCOL_VERSION);
+            bytes.Add(Protocol.VERSION);
 
             bytes.Add((byte)room.Length);
             bytes.AddRange(Encoding.UTF8.GetBytes(room));
@@ -618,6 +620,37 @@ namespace Blasphemous.Multiplayer.Client.Network
             Main.Multiplayer.AttackManager.ReceiveEffect(playerName, effectType);
         }
 
+        // Player impact effects
+
+        public void SendPlayerImpact(Vector3 position, byte effectKind, byte bloodType, bool facingRight)
+        {
+            List<byte> bytes = new();
+            bytes.AddRange(BitConverter.GetBytes(position.x));
+            bytes.AddRange(BitConverter.GetBytes(position.y));
+            bytes.AddRange(BitConverter.GetBytes(position.z));
+            bytes.Add(effectKind);
+            bytes.Add(bloodType);
+            bytes.Add((byte)(facingRight ? 1 : 0));
+            QueueMesssage(bytes.ToArray(), NetworkType.PlayerImpact);
+        }
+
+        private void ReceivePlayerImpact(byte[] data)
+        {
+            int startIdx = ExtractNameFromData(data, out string playerName);
+            if (data.Length - startIdx != 15)
+                return;
+
+            Vector3 position = new(
+                BitConverter.ToSingle(data, startIdx),
+                BitConverter.ToSingle(data, startIdx + 4),
+                BitConverter.ToSingle(data, startIdx + 8));
+            byte effectKind = data[startIdx + 12];
+            byte bloodType = data[startIdx + 13];
+            bool facingRight = data[startIdx + 14] != 0;
+
+            Main.Multiplayer.AttackManager.ReceivePlayerImpact(playerName, position, effectKind, bloodType, facingRight);
+        }
+
         // Ping
 
         public void SendPing(float time, ushort ping)
@@ -651,6 +684,5 @@ namespace Blasphemous.Multiplayer.Client.Network
         public delegate void ConnectDelegate(bool success, RefusalType refusal);
         public event ConnectDelegate OnConnect;
 
-        private const byte PROTOCOL_VERSION = 8;
     }
 }

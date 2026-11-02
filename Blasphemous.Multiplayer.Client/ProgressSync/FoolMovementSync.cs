@@ -1,4 +1,5 @@
 using System;
+using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Client.Players;
 using Framework.FrameworkCore;
 using Framework.Managers;
@@ -44,6 +45,7 @@ public sealed class FoolMovementSync : MonoBehaviour
     private float _nextSnapshot;
     private float _nextIdentityRefresh;
     private bool _isAuthority;
+    private bool _authorityInitialized;
     private bool _hasSnapshot;
     private Vector3 _targetPosition;
 
@@ -130,7 +132,8 @@ public sealed class FoolMovementSync : MonoBehaviour
 
     private void SetAuthority(bool authority)
     {
-        if (_isAuthority == authority) return;
+        if (_authorityInitialized && _isAuthority == authority) return;
+        _authorityInitialized = true;
         _isAuthority = authority;
         if (_fool.Behaviour != null)
         {

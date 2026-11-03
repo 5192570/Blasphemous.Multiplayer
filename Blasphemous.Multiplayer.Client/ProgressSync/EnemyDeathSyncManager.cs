@@ -1,4 +1,5 @@
 using System;
+using Blasphemous.Multiplayer.Client.Network;
 using System.Collections.Generic;
 using System.Globalization;
 using Blasphemous.ModdingAPI;
@@ -61,7 +62,7 @@ public static class EnemyDeathSyncManager
         if (context.Enemy.Status.Dead)
         {
             generations[key] = current + 1;
-            ModLog.Info($"[EnemyDeathSync] Local death scene={context.SceneName}, spawn={context.SpawnPointId}, generation={current}");
+            SharedDiagnosticLogger.Info($"[EnemyDeathSync] Local death scene={context.SceneName}, spawn={context.SpawnPointId}, generation={current}");
             Main.Multiplayer.NetworkManager.SendEnemyDeath(context.SceneName, context.SpawnPointId, current);
             return;
         }
@@ -75,7 +76,7 @@ public static class EnemyDeathSyncManager
         bool tookDamage = damage > 0.001f;
         if (tookDamage)
         {
-            ModLog.Info($"[EnemyHealthSync] Local damage scene={context.SceneName}, spawn={context.SpawnPointId}, generation={current}, damage={damage:0.##}");
+            SharedDiagnosticLogger.Info($"[EnemyHealthSync] Local damage scene={context.SceneName}, spawn={context.SpawnPointId}, generation={current}, damage={damage:0.##}");
             Main.Multiplayer.NetworkManager.SendEnemyHealth(context.SceneName, context.SpawnPointId, current, damage);
         }
 
@@ -107,82 +108,82 @@ public static class EnemyDeathSyncManager
 
     public static void ApplyRemoteAttack(string sceneName, string spawnPointId, int generation, byte orientation, string sourcePlayerName)
     {
-        ModLog.Info($"[EnemyAttackSyncDiag] Received attack scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, orientation={orientation}, localScene={Core.LevelManager.currentLevel?.LevelName}");
+        SharedDiagnosticLogger.Info($"[EnemyAttackSyncDiag] Received attack scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, orientation={orientation}, localScene={Core.LevelManager.currentLevel?.LevelName}");
 
         if (string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 ||
             orientation > 1 || string.IsNullOrEmpty(sourcePlayerName))
         {
-            ModLog.Warn($"[EnemyAttackSyncDiag] Rejected attack: invalid payload scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, orientation={orientation}");
+            SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Rejected attack: invalid payload scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, orientation={orientation}");
             return;
         }
 
         if (Core.LevelManager.currentLevel == null || Core.LevelManager.currentLevel.LevelName != sceneName)
         {
-            ModLog.Warn($"[EnemyAttackSyncDiag] Rejected attack: scene mismatch packetScene={sceneName}, localScene={Core.LevelManager.currentLevel?.LevelName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}");
+            SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Rejected attack: scene mismatch packetScene={sceneName}, localScene={Core.LevelManager.currentLevel?.LevelName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}");
             return;
         }
 
         int localGeneration = GetGeneration(MakeGenerationKey(sceneName, spawnPointId));
         if (localGeneration != generation)
         {
-            ModLog.Warn($"[EnemyAttackSyncDiag] Rejected attack: generation mismatch scene={sceneName}, spawn={spawnPointId}, packetGeneration={generation}, localGeneration={localGeneration}, source={sourcePlayerName}");
+            SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Rejected attack: generation mismatch scene={sceneName}, spawn={spawnPointId}, packetGeneration={generation}, localGeneration={localGeneration}, source={sourcePlayerName}");
             return;
         }
 
         if (!TryFindSpawnPoint(sceneName, spawnPointId, out EnemySpawnPoint point))
         {
-            ModLog.Warn($"[EnemyAttackSyncDiag] Rejected attack: spawn point not found or identity ambiguous scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}");
+            SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Rejected attack: spawn point not found or identity ambiguous scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}");
             return;
         }
 
         Enemy enemy = point.SpawnedEnemy;
         if (enemy == null)
         {
-            ModLog.Warn($"[EnemyAttackSyncDiag] Rejected attack: spawn point has no spawned enemy scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}");
+            SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Rejected attack: spawn point has no spawned enemy scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}");
             return;
         }
         if (!EnemySyncManager.Supports(enemy) || enemy.Status.Dead)
         {
-            ModLog.Warn($"[EnemyAttackSyncDiag] Rejected attack: unsupported or dead enemy type={enemy.GetType().Name}, dead={enemy.Status.Dead}, scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}");
+            SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Rejected attack: unsupported or dead enemy type={enemy.GetType().Name}, dead={enemy.Status.Dead}, scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}");
             return;
         }
 
         EnemySync sync = enemy.GetComponent<EnemySync>();
         if (sync == null)
         {
-            ModLog.Warn($"[EnemyAttackSyncDiag] EnemySync missing; attempting late attach scene={sceneName}, spawn={spawnPointId}, generation={generation}, enemyInstance={enemy.GetInstanceID()}");
+            SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] EnemySync missing; attempting late attach scene={sceneName}, spawn={spawnPointId}, generation={generation}, enemyInstance={enemy.GetInstanceID()}");
             EnemySyncManager.Attach(enemy);
             sync = enemy.GetComponent<EnemySync>();
         }
         if (sync == null)
         {
-            ModLog.Warn($"[EnemyAttackSyncDiag] Rejected attack: EnemySync unavailable after attach scene={sceneName}, spawn={spawnPointId}, generation={generation}, enemyInstance={enemy.GetInstanceID()}");
+            SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Rejected attack: EnemySync unavailable after attach scene={sceneName}, spawn={spawnPointId}, generation={generation}, enemyInstance={enemy.GetInstanceID()}");
             return;
         }
         if (sync.IsAuthority)
         {
-            ModLog.Warn($"[EnemyAttackSyncDiag] Rejected attack: receiver considers itself authoritative scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, enemyInstance={enemy.GetInstanceID()}");
+            SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Rejected attack: receiver considers itself authoritative scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, enemyInstance={enemy.GetInstanceID()}");
             return;
         }
         if (!sync.IsExpectedAuthority(sourcePlayerName))
         {
-            ModLog.Warn($"[EnemyAttackSyncDiag] Rejected attack: sender failed authority validation scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, enemyInstance={enemy.GetInstanceID()}");
+            SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Rejected attack: sender failed authority validation scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, enemyInstance={enemy.GetInstanceID()}");
             return;
         }
         if (!EnemySyncManager.TryGetHandler(enemy, out EnemySyncHandler handler))
         {
-            ModLog.Warn($"[EnemyAttackSyncDiag] Rejected attack: sync handler missing scene={sceneName}, spawn={spawnPointId}, generation={generation}, enemyInstance={enemy.GetInstanceID()}");
+            SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Rejected attack: sync handler missing scene={sceneName}, spawn={spawnPointId}, generation={generation}, enemyInstance={enemy.GetInstanceID()}");
             return;
         }
 
         if (handler is WheelCarrierEnemySyncHandler wheelCarrierHandler)
         {
-            ModLog.Info($"[EnemyAttackSyncDiag] Applying attack scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, orientation={orientation}, enemyInstance={enemy.GetInstanceID()}, localPlayer={Main.Multiplayer?.PlayerName}");
+            SharedDiagnosticLogger.Info($"[EnemyAttackSyncDiag] Applying attack scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, orientation={orientation}, enemyInstance={enemy.GetInstanceID()}, localPlayer={Main.Multiplayer?.PlayerName}");
             wheelCarrierHandler.ApplyRemoteAttack(orientation);
         }
         else
         {
-            ModLog.Warn($"[EnemyAttackSyncDiag] Rejected attack: unexpected handler type={handler.GetType().Name}, scene={sceneName}, spawn={spawnPointId}, generation={generation}, enemyInstance={enemy.GetInstanceID()}");
+            SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Rejected attack: unexpected handler type={handler.GetType().Name}, scene={sceneName}, spawn={spawnPointId}, generation={generation}, enemyInstance={enemy.GetInstanceID()}");
         }
     }
 
@@ -248,7 +249,7 @@ public static class EnemyDeathSyncManager
 
         if (!TryFindSpawnPoint(sceneName, spawnPointId, out EnemySpawnPoint spawnPoint))
         {
-            ModLog.Warn($"[EnemyHealthSync] Spawn point not found or identity is ambiguous: scene={sceneName}, spawn={spawnPointId}");
+            SharedDiagnosticLogger.Warn($"[EnemyHealthSync] Spawn point not found or identity is ambiguous: scene={sceneName}, spawn={spawnPointId}");
             return;
         }
 
@@ -270,7 +271,7 @@ public static class EnemyDeathSyncManager
         }
 
         enemy.SetHealth(newHealth);
-        ModLog.Info($"[EnemyHealthSync] Applied remote damage scene={sceneName}, spawn={spawnPointId}, generation={generation}, damage={damage:0.##}, hp={newHealth:0.##}");
+        SharedDiagnosticLogger.Info($"[EnemyHealthSync] Applied remote damage scene={sceneName}, spawn={spawnPointId}, generation={generation}, damage={damage:0.##}, hp={newHealth:0.##}");
     }
 
     public static void ApplyRemoteDeath(string sceneName, string spawnPointId, int generation)
@@ -285,7 +286,7 @@ public static class EnemyDeathSyncManager
             if (pendingRemoteDeaths.TryGetValue(key, out int pendingGeneration) && pendingGeneration == generation)
                 return;
 
-            ModLog.Warn($"[EnemyDeathSync] Ignored stale/duplicate death scene={sceneName}, spawn={spawnPointId}, packetGeneration={generation}, currentGeneration={current}");
+            SharedDiagnosticLogger.Warn($"[EnemyDeathSync] Ignored stale/duplicate death scene={sceneName}, spawn={spawnPointId}, packetGeneration={generation}, currentGeneration={current}");
             return;
         }
 
@@ -298,7 +299,7 @@ public static class EnemyDeathSyncManager
             TryFindSpawnPoint(sceneName, spawnPointId, out EnemySpawnPoint spawnPoint))
             ReconcilePendingDeath(spawnPoint);
 
-        ModLog.Info($"[EnemyDeathSync] Recorded remote death scene={sceneName}, spawn={spawnPointId}, generation={generation}");
+        SharedDiagnosticLogger.Info($"[EnemyDeathSync] Recorded remote death scene={sceneName}, spawn={spawnPointId}, generation={generation}");
     }
 
     internal static void ReconcilePendingDeath(EnemySpawnPoint spawnPoint)
@@ -318,7 +319,7 @@ public static class EnemyDeathSyncManager
             // CreateEnemy reads the consumed list before instantiating its prefab.
             Core.Logic.EnemySpawner.AddConsumedSpawner(spawnPoint);
             pendingRemoteDeaths.Remove(key);
-            ModLog.Info($"[EnemyDeathSync] Suppressed defeated enemy spawn scene={sceneName}, spawn={spawnPointId}, generation={generation}");
+            SharedDiagnosticLogger.Info($"[EnemyDeathSync] Suppressed defeated enemy spawn scene={sceneName}, spawn={spawnPointId}, generation={generation}");
             return;
         }
 
@@ -357,12 +358,12 @@ public static class EnemyDeathSyncManager
             if (EnemySyncManager.TryGetHandler(enemy, out EnemySyncHandler handler))
             {
                 handler.ApplyDeath();
-                ModLog.Info($"[EnemyDeathSync] Started {enemy.GetType().Name} death presentation; disabledColliders={disabledColliders}");
+                SharedDiagnosticLogger.Info($"[EnemyDeathSync] Started {enemy.GetType().Name} death presentation; disabledColliders={disabledColliders}");
             }
             else
             {
                 enemy.gameObject.SetActive(false);
-                ModLog.Info($"[EnemyDeathSync] Remote cleanup disabledColliders={disabledColliders}, enemyDeactivated=true");
+                SharedDiagnosticLogger.Info($"[EnemyDeathSync] Remote cleanup disabledColliders={disabledColliders}, enemyDeactivated=true");
             }
         }
         finally
@@ -370,7 +371,7 @@ public static class EnemyDeathSyncManager
             applyingRemoteDeath = false;
         }
 
-        ModLog.Info($"[EnemyDeathSync] Applied remote death scene={sceneName}, spawn={spawnPointId}, generation={generation}");
+        SharedDiagnosticLogger.Info($"[EnemyDeathSync] Applied remote death scene={sceneName}, spawn={spawnPointId}, generation={generation}");
     }
 
     internal static void ClearPendingDeathsForWorldReset()
@@ -382,7 +383,7 @@ public static class EnemyDeathSyncManager
         int clearedCount = pendingRemoteDeaths.Count;
         pendingRemoteDeaths.Clear();
 
-        ModLog.Info($"[EnemyDeathSync] Cleared {clearedCount} pending remote death(s) across all scenes for world reset; generation counters preserved.");
+        SharedDiagnosticLogger.Info($"[EnemyDeathSync] Cleared {clearedCount} pending remote death(s) across all scenes for world reset; generation counters preserved.");
     }
 
     public static void ResetSession()
@@ -435,7 +436,7 @@ public static class EnemyDeathSyncManager
 
             if (matches != 1)
             {
-                ModLog.Warn($"[EnemyDeathSync] Duplicate spawn identity in {sceneName}: {candidate}");
+                SharedDiagnosticLogger.Warn($"[EnemyDeathSync] Duplicate spawn identity in {sceneName}: {candidate}");
                 return false;
             }
 
@@ -456,7 +457,7 @@ public static class EnemyDeathSyncManager
                 continue;
             if (match != null)
             {
-                ModLog.Warn($"[EnemyDeathSync] Duplicate spawn identity in {sceneName}: {identity}");
+                SharedDiagnosticLogger.Warn($"[EnemyDeathSync] Duplicate spawn identity in {sceneName}: {identity}");
                 match = null;
                 return false;
             }

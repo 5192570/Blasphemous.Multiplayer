@@ -908,8 +908,9 @@ public class Server
                 sceneName = reader.ReadString();
                 string spawnPointId = reader.ReadString();
                 int generation = reader.ReadInt32();
+                byte orientation = reader.ReadByte();
                 targetName = reader.ReadString();
-                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) ||
+                if (stream.Position != stream.Length || generation < 0 || orientation > 1 || string.IsNullOrEmpty(sceneName) ||
                     string.IsNullOrEmpty(spawnPointId) || generation < 0 || string.IsNullOrEmpty(targetName)) return;
             }
 

@@ -571,10 +571,10 @@ namespace Blasphemous.Multiplayer.Client.Network
             catch (Exception ex) { ModLog.Warn($"Ignored malformed enemy position packet: {ex.GetType().Name}: {ex.Message}"); }
         }
 
-        public void SendEnemyAttack(string sceneName, string spawnPointId, int generation, byte orientation, string targetPlayerName)
+        public void SendEnemyAttack(string sceneName, string spawnPointId, int generation, byte orientation)
         {
             if (!IsConnected || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
-                generation < 0 || orientation > 1 || string.IsNullOrEmpty(targetPlayerName)) return;
+                generation < 0 || orientation > 1) return;
 
             using (MemoryStream stream = new MemoryStream())
             using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8))
@@ -583,7 +583,6 @@ namespace Blasphemous.Multiplayer.Client.Network
                 writer.Write(spawnPointId);
                 writer.Write(generation);
                 writer.Write(orientation);
-                writer.Write(targetPlayerName);
                 QueueMesssage(stream.ToArray(), NetworkType.EnemyAttack);
             }
         }
@@ -603,11 +602,10 @@ namespace Blasphemous.Multiplayer.Client.Network
                     string spawnPointId = reader.ReadString();
                     int generation = reader.ReadInt32();
                     byte orientation = reader.ReadByte();
-                    string targetPlayerName = reader.ReadString();
                     if (stream.Position != stream.Length || generation < 0 || orientation > 1 || string.IsNullOrEmpty(sceneName) ||
-                        string.IsNullOrEmpty(spawnPointId) || string.IsNullOrEmpty(targetPlayerName)) return;
+                        string.IsNullOrEmpty(spawnPointId)) return;
 
-                    EnemyDeathSyncManager.ApplyRemoteAttack(sceneName, spawnPointId, generation, orientation, sourcePlayerName, targetPlayerName);
+                    EnemyDeathSyncManager.ApplyRemoteAttack(sceneName, spawnPointId, generation, orientation, sourcePlayerName);
                 }
             }
             catch (Exception ex)

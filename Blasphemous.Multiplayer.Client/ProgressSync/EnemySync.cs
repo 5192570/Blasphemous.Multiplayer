@@ -37,6 +37,7 @@ public sealed class EnemySync : MonoBehaviour
     private GameObject _committedTarget;
     private float _targetCommitmentUntil;
     private bool _loggedFirstPeerSnapshot;
+    private string _lastAuthorityDiagnosticState;
 
     internal void Attach(EnemySyncHandler handler)
     {
@@ -71,6 +72,7 @@ public sealed class EnemySync : MonoBehaviour
         }
 
         SetAuthority(ResolveAuthority());
+        LogAuthorityContextIfChanged();
         if (_isAuthority && !_awaitingPeerState)
         {
             UpdateTarget();
@@ -187,6 +189,18 @@ public sealed class EnemySync : MonoBehaviour
             peers.Add($"{player.Name}@{player.CurrentScene}");
         }
         return peers.Count == 0 ? "<none>" : string.Join(";", peers.ToArray());
+    }
+
+    private void LogAuthorityContextIfChanged()
+    {
+        string localName = Main.Multiplayer == null ? "<offline>" : Main.Multiplayer.PlayerName;
+        string preferredName = Main.Multiplayer == null ? "<offline>" : GetPreferredAuthorityName();
+        bool peerPublishing = _lastPeerSnapshotGeneration == _generation && Time.unscaledTime - _lastPeerSnapshot < PeerSnapshotTimeout;
+        string state = $"local={localName}|preferred={preferredName}|authority={_isAuthority}|peerPublishing={peerPublishing}|awaiting={_awaitingPeerState}|peers={DescribePeers()}";
+        if (state == _lastAuthorityDiagnosticState) return;
+
+        _lastAuthorityDiagnosticState = state;
+        ModLog.Info($"[EnemySyncDiag] Authority context changed scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, enemyInstance={_enemy?.GetInstanceID()}, {state}");
     }
 
     private bool IsLocalAuthority()

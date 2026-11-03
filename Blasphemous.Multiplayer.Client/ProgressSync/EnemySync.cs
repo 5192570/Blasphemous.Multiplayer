@@ -38,6 +38,7 @@ public sealed class EnemySync : MonoBehaviour
     private float _targetCommitmentUntil;
     private bool _loggedFirstPeerSnapshot;
     private string _lastAuthorityDiagnosticState;
+    private float _nextAuthorityDiagnostic;
 
     internal void Attach(EnemySyncHandler handler)
     {
@@ -193,6 +194,9 @@ public sealed class EnemySync : MonoBehaviour
 
     private void LogAuthorityContextIfChanged()
     {
+        if (Time.unscaledTime < _nextAuthorityDiagnostic) return;
+        _nextAuthorityDiagnostic = Time.unscaledTime + 0.25f;
+
         string localName = Main.Multiplayer == null ? "<offline>" : Main.Multiplayer.PlayerName;
         string preferredName = Main.Multiplayer == null ? "<offline>" : GetPreferredAuthorityName();
         bool peerPublishing = _lastPeerSnapshotGeneration == _generation && Time.unscaledTime - _lastPeerSnapshot < PeerSnapshotTimeout;

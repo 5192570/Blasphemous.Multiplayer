@@ -18,6 +18,7 @@ public class Server
     private SimpleTcpServer server;
     private Dictionary<string, PlayerInfo> connectedPlayers;
     private readonly List<string> _connectionOrder = new List<string>();
+    private SceneAuthorityManager _sceneAuthority = new SceneAuthorityManager();
     private readonly object _diagnosticLock = new object();
     private string _diagnosticSessionId;
     private string _diagnosticCollectorIp;
@@ -52,6 +53,7 @@ public class Server
     {
         connectedPlayers = new Dictionary<string, PlayerInfo>();
         _connectionOrder.Clear();
+        _sceneAuthority = new SceneAuthorityManager();
         _diagnosticSessionId = Guid.NewGuid().ToString("N");
         _diagnosticCollectorIp = null;
         _diagnosticRelaySequence = 0;
@@ -161,8 +163,10 @@ public class Server
         lock (_diagnosticLock)
             collectorDisconnected = _diagnosticCollectorIp == e.ip;
 
+        List<SceneAuthorityManager.Update> sceneUpdates = _sceneAuthority.Leave(e.ip);
         connectedPlayers.Remove(e.ip);
         _connectionOrder.Remove(e.ip);
+        ApplySceneAuthorityUpdates(sceneUpdates);
 
         if (collectorDisconnected)
             AssignDiagnosticCollector();
@@ -314,6 +318,7 @@ public class Server
         current.sceneName = Encoding.UTF8.GetString(data);
 
         sendPlayerEnterScene(playerIp);
+        ApplySceneAuthorityUpdates(_sceneAuthority.Enter(playerIp, current.name, current.sceneName));
     }
 
     private byte[] getScenePacket(PlayerInfo player)
@@ -348,7 +353,47 @@ public class Server
         PlayerInfo current = getCurrentPlayer(playerIp);
 
         sendPlayerLeaveScene(playerIp);
+        List<SceneAuthorityManager.Update> sceneUpdates = _sceneAuthority.Leave(playerIp);
         current.sceneName = "";
+        ApplySceneAuthorityUpdates(sceneUpdates);
+    }
+
+
+    // Server-assigned scene authority
+
+    private void SendSceneAuthoritySnapshots(string playerIp)
+    {
+        foreach (SceneAuthorityManager.Update snapshot in _sceneAuthority.GetSnapshots())
+            SendSceneAuthority(playerIp, snapshot);
+    }
+
+    private void ApplySceneAuthorityUpdates(List<SceneAuthorityManager.Update> updates)
+    {
+        if (updates == null)
+            return;
+
+        foreach (SceneAuthorityManager.Update update in updates)
+        {
+            foreach (string recipientIp in update.Recipients)
+            {
+                if (connectedPlayers.ContainsKey(recipientIp))
+                    SendSceneAuthority(recipientIp, update);
+            }
+
+            Logger.Info($"Scene authority changed: scene={update.SceneName}, host={(string.IsNullOrEmpty(update.HostName) ? "<none>" : update.HostName)}, epoch={update.Epoch}");
+        }
+    }
+
+    private void SendSceneAuthority(string playerIp, SceneAuthorityManager.Update update)
+    {
+        using (MemoryStream stream = new MemoryStream())
+        using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8))
+        {
+            writer.Write(update.SceneName);
+            writer.Write(update.HostName);
+            writer.Write(update.Epoch);
+            Send(playerIp, stream.ToArray(), NetworkType.SceneAuthority);
+        }
     }
 
     // Skin
@@ -482,6 +527,8 @@ public class Server
                 }
             }
         }
+
+        SendSceneAuthoritySnapshots(playerIp);
     }
 
     private void receivePlayerIntro(string playerIp, byte[] data)

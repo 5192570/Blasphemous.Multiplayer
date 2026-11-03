@@ -42,7 +42,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         if (_wheelCarrier == null) return;
         _wheelCarrier.SetOrientation((EntityOrientation)orientation);
         _wheelCarrier.entityCurrentState = (EntityStates)state;
-        if (_wheelCarrier.AnimatorInyector == null) return;
+        if (_wheelCarrier.AnimatorInyector == null || _wheelCarrier.IsAttacking) return;
         if (walking && state != (byte)EntityStates.Hurt) _wheelCarrier.AnimatorInyector.Walk();
         else _wheelCarrier.AnimatorInyector.Stop();
     }
@@ -51,11 +51,12 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
 
     internal bool IsReplayingRemoteAttack => _replayingRemoteAttack;
 
-    internal void ApplyRemoteAttack()
+    internal void ApplyRemoteAttack(byte orientation)
     {
         if (_wheelCarrier == null || _wheelCarrier.AnimatorInyector == null || _wheelCarrier.IsAttacking)
             return;
 
+        _wheelCarrier.SetOrientation((EntityOrientation)orientation);
         _replayingRemoteAttack = true;
         try
         {

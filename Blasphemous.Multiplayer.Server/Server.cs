@@ -4,6 +4,7 @@ using Blasphemous.Multiplayer.Server.Models;
 using SimpleTCP;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 
@@ -16,6 +17,12 @@ public class Server
 
     private SimpleTcpServer server;
     private Dictionary<string, PlayerInfo> connectedPlayers;
+    private readonly List<string> _connectionOrder = new List<string>();
+    private readonly object _diagnosticLock = new object();
+    private string _diagnosticSessionId;
+    private string _diagnosticCollectorIp;
+    private Stopwatch _diagnosticSessionClock;
+    private long _diagnosticRelaySequence;
 
     public Server(int maxPlayers, string password)
     {
@@ -41,6 +48,13 @@ public class Server
 
     public bool Start(int port)
     {
+        connectedPlayers = new Dictionary<string, PlayerInfo>();
+        _connectionOrder.Clear();
+        _diagnosticSessionId = Guid.NewGuid().ToString("N");
+        _diagnosticCollectorIp = null;
+        _diagnosticRelaySequence = 0;
+        _diagnosticSessionClock = Stopwatch.StartNew();
+
         try
         {
             server = new SimpleTcpServer();
@@ -55,7 +69,6 @@ public class Server
             return false;
         }
 
-        connectedPlayers = new Dictionary<string, PlayerInfo>();
         return true;
     }
 
@@ -119,6 +132,7 @@ public class Server
                 case NetworkType.EnemyPosition: receivePlayerEnemyPosition(e.ip, data); break;
                 case NetworkType.PlayerImpact: receivePlayerImpact(e.ip, data); break;
                 case NetworkType.EnemyAttack: receivePlayerEnemyAttack(e.ip, data); break;
+                case NetworkType.DiagnosticBatch: receiveDiagnosticBatch(e.ip, data); break;
                 default:
                     Logger.Error($"Data type '{type}' is not valid"); break;
             }
@@ -138,9 +152,18 @@ public class Server
         if (!connectedPlayers.ContainsKey(e.ip))
             return;
 
-        // Send that this player has disconnected & remove them
+        // Send that this player has disconnected & remove them.
         sendPlayerConnection(e.ip, false);
+        bool collectorDisconnected;
+        lock (_diagnosticLock)
+            collectorDisconnected = _diagnosticCollectorIp == e.ip;
+
         connectedPlayers.Remove(e.ip);
+        _connectionOrder.Remove(e.ip);
+
+        if (collectorDisconnected)
+            AssignDiagnosticCollector();
+
         Core.removeUnusedGameData(connectedPlayers);
     }
 
@@ -525,8 +548,16 @@ public class Server
         Logger.Info("Player connection accepted");
         PlayerInfo newPlayer = new PlayerInfo(name, team);
         connectedPlayers.Add(playerIp, newPlayer);
+        _connectionOrder.Add(playerIp);
+        lock (_diagnosticLock)
+        {
+            if (string.IsNullOrEmpty(_diagnosticCollectorIp))
+                _diagnosticCollectorIp = playerIp;
+        }
+
         sendPlayerConnection(playerIp, true);
         sendPlayerIntro(playerIp, RefusalType.Accepted);
+        BroadcastDiagnosticCollectorAssignment();
     }
 
     private byte[] getIntroPacket(byte response)
@@ -893,6 +924,96 @@ public class Server
                     Send(ip, data, NetworkType.EnemyPosition);
         }
         catch (Exception ex) { Logger.Warn($"Ignored malformed enemy position packet: {ex.GetType().Name}: {ex.Message}"); }
+    }
+
+
+    // Shared diagnostics are relayed independently of scene and enemy authority.
+    // Every batch is timestamped by the server's monotonic session clock before
+    // it reaches the currently assigned collector.
+    private void BroadcastDiagnosticCollectorAssignment()
+    {
+        string collectorIp;
+        string collectorName;
+        string sessionId;
+        long serverElapsedMilliseconds;
+
+        lock (_diagnosticLock)
+        {
+            collectorIp = _diagnosticCollectorIp;
+            sessionId = _diagnosticSessionId;
+            serverElapsedMilliseconds = _diagnosticSessionClock == null ? 0 : _diagnosticSessionClock.ElapsedMilliseconds;
+        }
+
+        collectorName = !string.IsNullOrEmpty(collectorIp) && connectedPlayers.ContainsKey(collectorIp)
+            ? connectedPlayers[collectorIp].name
+            : string.Empty;
+
+        using (MemoryStream stream = new MemoryStream())
+        using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8))
+        {
+            writer.Write(sessionId ?? string.Empty);
+            writer.Write(collectorName);
+            writer.Write(serverElapsedMilliseconds);
+            byte[] packet = stream.ToArray();
+
+            foreach (string ip in connectedPlayers.Keys)
+                Send(ip, packet, NetworkType.DiagnosticControl);
+        }
+
+        Logger.Info($"Shared diagnostic collector assigned: {collectorName}");
+    }
+
+    private void AssignDiagnosticCollector()
+    {
+        string nextCollector = null;
+        foreach (string ip in _connectionOrder)
+        {
+            if (connectedPlayers.ContainsKey(ip))
+            {
+                nextCollector = ip;
+                break;
+            }
+        }
+
+        lock (_diagnosticLock)
+            _diagnosticCollectorIp = nextCollector;
+
+        BroadcastDiagnosticCollectorAssignment();
+    }
+
+    private void receiveDiagnosticBatch(string playerIp, byte[] data)
+    {
+        if (data == null || data.Length == 0 || data.Length > 8192 || !connectedPlayers.ContainsKey(playerIp))
+            return;
+
+        string collectorIp;
+        string sessionId;
+        long serverElapsedMilliseconds;
+        long relaySequence;
+
+        lock (_diagnosticLock)
+        {
+            collectorIp = _diagnosticCollectorIp;
+            sessionId = _diagnosticSessionId;
+            serverElapsedMilliseconds = _diagnosticSessionClock == null ? 0 : _diagnosticSessionClock.ElapsedMilliseconds;
+            relaySequence = ++_diagnosticRelaySequence;
+        }
+
+        if (string.IsNullOrEmpty(collectorIp) || !connectedPlayers.ContainsKey(collectorIp))
+            return;
+
+        PlayerInfo source = connectedPlayers[playerIp];
+        using (MemoryStream stream = new MemoryStream())
+        using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8))
+        {
+            writer.Write(sessionId ?? string.Empty);
+            writer.Write(serverElapsedMilliseconds);
+            writer.Write(relaySequence);
+            writer.Write(source.name);
+            writer.Write(data.Length);
+            writer.Write(data);
+            Send(collectorIp, stream.ToArray(), NetworkType.DiagnosticBatch);
+        }
     }
 
     // Relay authoritative WheelCarrier attacks to every peer in the same scene.

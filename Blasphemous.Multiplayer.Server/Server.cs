@@ -95,7 +95,7 @@ public class Server
     }
 
     // Data should be formatted as length length type data
-    private void Receive(object sender, DataReceivedEventArgs e)
+    private void Receive(object sender, SimpleTCP.DataReceivedEventArgs e)
     {
         int startIdx = 0;
         while (startIdx < e.data.Length - 3)

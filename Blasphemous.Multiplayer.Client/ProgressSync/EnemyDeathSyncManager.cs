@@ -236,7 +236,6 @@ public static class EnemyDeathSyncManager
             EnemySyncManager.TryGetHandler(enemy, out handler);
         }
         if (handler == null) return;
-        EntityStates startingState = enemy.entityCurrentState;
         applyingRemoteDamage = true;
         try
         {
@@ -263,7 +262,6 @@ public static class EnemyDeathSyncManager
             if (dead) CommitAuthorityDeath(sceneName, spawnPointId, generation, epoch);
             else
             {
-                bool enteredHurtState = startingState != EntityStates.Hurt && enemy.entityCurrentState == EntityStates.Hurt;
                 if (enteredHurtState || handler.SyncHitOnDamage || !wasActive)
                     Main.Multiplayer.NetworkManager.SendEnemyHit(sceneName, spawnPointId, generation, epoch, sourcePlayerName, damageType, orientation);
             }

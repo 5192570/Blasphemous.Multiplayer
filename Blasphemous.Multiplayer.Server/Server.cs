@@ -23,6 +23,8 @@ public class Server
     private string _diagnosticCollectorIp;
     private Stopwatch _diagnosticSessionClock;
     private long _diagnosticRelaySequence;
+    private readonly Queue<byte[]> _diagnosticHistory = new Queue<byte[]>();
+    private const int DiagnosticHistoryLimit = 256;
 
     public Server(int maxPlayers, string password)
     {
@@ -549,15 +551,21 @@ public class Server
         PlayerInfo newPlayer = new PlayerInfo(name, team);
         connectedPlayers.Add(playerIp, newPlayer);
         _connectionOrder.Add(playerIp);
+        bool collectorAssigned = false;
         lock (_diagnosticLock)
         {
             if (string.IsNullOrEmpty(_diagnosticCollectorIp))
+            {
                 _diagnosticCollectorIp = playerIp;
+                collectorAssigned = true;
+            }
         }
 
         sendPlayerConnection(playerIp, true);
         sendPlayerIntro(playerIp, RefusalType.Accepted);
         BroadcastDiagnosticCollectorAssignment();
+        if (collectorAssigned)
+            ReplayDiagnosticHistory();
     }
 
     private byte[] getIntroPacket(byte response)
@@ -979,6 +987,24 @@ public class Server
             _diagnosticCollectorIp = nextCollector;
 
         BroadcastDiagnosticCollectorAssignment();
+        ReplayDiagnosticHistory();
+    }
+
+    private void ReplayDiagnosticHistory()
+    {
+        string collectorIp;
+        List<byte[]> history;
+        lock (_diagnosticLock)
+        {
+            collectorIp = _diagnosticCollectorIp;
+            history = new List<byte[]>(_diagnosticHistory);
+        }
+
+        if (string.IsNullOrEmpty(collectorIp) || !connectedPlayers.ContainsKey(collectorIp))
+            return;
+
+        foreach (byte[] packet in history)
+            Send(collectorIp, packet, NetworkType.DiagnosticBatch);
     }
 
     private void receiveDiagnosticBatch(string playerIp, byte[] data)
@@ -1003,6 +1029,7 @@ public class Server
             return;
 
         PlayerInfo source = connectedPlayers[playerIp];
+        byte[] relayPacket;
         using (MemoryStream stream = new MemoryStream())
         using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8))
         {
@@ -1012,8 +1039,17 @@ public class Server
             writer.Write(source.name);
             writer.Write(data.Length);
             writer.Write(data);
-            Send(collectorIp, stream.ToArray(), NetworkType.DiagnosticBatch);
+            relayPacket = stream.ToArray();
         }
+
+        lock (_diagnosticLock)
+        {
+            _diagnosticHistory.Enqueue(relayPacket);
+            while (_diagnosticHistory.Count > DiagnosticHistoryLimit)
+                _diagnosticHistory.Dequeue();
+        }
+
+        Send(collectorIp, relayPacket, NetworkType.DiagnosticBatch);
     }
 
     // Relay authoritative WheelCarrier attacks to every peer in the same scene.

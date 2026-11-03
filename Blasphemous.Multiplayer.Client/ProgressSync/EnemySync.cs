@@ -25,6 +25,7 @@ public sealed class EnemySync : MonoBehaviour
     private float _nextIdentityRefresh;
     private bool _isAuthority;
     private bool _authorityInitialized;
+    internal bool IsAuthority => _isAuthority;
     private bool _hasSnapshot;
     private bool _entryEvaluated;
     private bool _awaitingPeerState;

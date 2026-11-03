@@ -78,6 +78,7 @@ namespace Blasphemous.Multiplayer.Client.Network
             sendingQueue.Clear();
             receivingQueue.Clear();
             SharedDiagnosticLogger.ResetSession();
+            SceneAuthorityState.ResetSession();
 
             ModLog.Info("Disconnected from server");
             Main.Multiplayer.OnDisconnect();
@@ -210,6 +211,7 @@ namespace Blasphemous.Multiplayer.Client.Network
                         case NetworkType.EnemyAttack: ReceiveEnemyAttack(messageData); break;
                         case NetworkType.DiagnosticControl: ReceiveDiagnosticControl(messageData); break;
                         case NetworkType.DiagnosticBatch: SharedDiagnosticLogger.ReceiveMergedBatch(messageData); break;
+                        case NetworkType.SceneAuthority: ReceiveSceneAuthority(messageData); break;
                     }
                     startIdx += 3 + length;
                 }
@@ -225,6 +227,28 @@ namespace Blasphemous.Multiplayer.Client.Network
             byte nameLength = data[0];
             name = Encoding.UTF8.GetString(data, 1, nameLength);
             return nameLength + 1;
+        }
+
+        private void ReceiveSceneAuthority(byte[] data)
+        {
+            try
+            {
+                using (MemoryStream stream = new MemoryStream(data))
+                using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
+                {
+                    string sceneName = reader.ReadString();
+                    string hostName = reader.ReadString();
+                    long epoch = reader.ReadInt64();
+                    if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || epoch < 0)
+                        return;
+
+                    SceneAuthorityState.Receive(sceneName, hostName, epoch);
+                }
+            }
+            catch (Exception ex)
+            {
+                ModLog.Warn($"Ignored malformed scene authority packet: {ex.GetType().Name}: {ex.Message}");
+            }
         }
 
         // Position

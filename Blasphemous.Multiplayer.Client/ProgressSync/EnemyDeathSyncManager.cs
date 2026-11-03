@@ -105,12 +105,11 @@ public static class EnemyDeathSyncManager
         return EnemySyncManager.Supports(enemy) && !enemy.Status.Dead;
     }
 
-    public static void ApplyRemoteAttack(string sceneName, string spawnPointId, int generation, byte orientation, string sourcePlayerName, string targetPlayerName)
+    public static void ApplyRemoteAttack(string sceneName, string spawnPointId, int generation, byte orientation, string sourcePlayerName)
     {
-        if (string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 ||
-            string.IsNullOrEmpty(sourcePlayerName) || string.IsNullOrEmpty(targetPlayerName) ||
-            Main.Multiplayer == null || Main.Multiplayer.PlayerName != targetPlayerName ||
-            Core.LevelManager.currentLevel == null || Core.LevelManager.currentLevel.LevelName != sceneName ||
+        if (string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || orientation > 1 ||
+            string.IsNullOrEmpty(sourcePlayerName) || Core.LevelManager.currentLevel == null ||
+            Core.LevelManager.currentLevel.LevelName != sceneName ||
             !TryGetSpawnedEnemy(sceneName, spawnPointId, generation, out Enemy enemy)) return;
 
         EnemySync sync = enemy.GetComponent<EnemySync>();

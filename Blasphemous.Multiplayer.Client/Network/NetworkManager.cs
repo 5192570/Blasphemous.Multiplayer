@@ -205,6 +205,7 @@ namespace Blasphemous.Multiplayer.Client.Network
                         case NetworkType.WorldReset: ReceiveWorldReset(messageData); break;
                         case NetworkType.EnemyDeath: ReceiveEnemyDeath(messageData); break;
                         case NetworkType.EnemyDamageReport: ReceiveEnemyDamageReport(messageData); break;
+                        case NetworkType.EnemyStateReport: ReceiveEnemyStateReport(messageData); break;
                         case NetworkType.EnemyHit: ReceiveEnemyHit(messageData); break;
                         case NetworkType.EnemyPosition: ReceiveEnemyPosition(messageData); break;
                         case NetworkType.PlayerImpact: ReceivePlayerImpact(messageData); break;
@@ -602,9 +603,9 @@ namespace Blasphemous.Multiplayer.Client.Network
             catch (Exception ex) { ModLog.Warn($"Ignored malformed enemy hit packet: {ex.GetType().Name}: {ex.Message}"); }
         }
 
-        public void SendEnemyPosition(string sceneName, string spawnPointId, int generation, long epoch, Vector3 position, byte orientation, byte state, bool walking, float currentHealth)
+        public void SendEnemyPosition(string sceneName, string spawnPointId, int generation, long epoch, Vector3 position, byte orientation, byte state, byte specialState, bool walking, float currentHealth)
         {
-            if (!IsConnected || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 || orientation > 1 || state > 4 ||
+            if (!IsConnected || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 || orientation > 1 || state > 4 || specialState > 2 ||
                 float.IsNaN(position.x) || float.IsInfinity(position.x) || float.IsNaN(position.y) || float.IsInfinity(position.y) ||
                 float.IsNaN(position.z) || float.IsInfinity(position.z) || currentHealth <= 0f ||
                 float.IsNaN(currentHealth) || float.IsInfinity(currentHealth)) return;
@@ -613,7 +614,7 @@ namespace Blasphemous.Multiplayer.Client.Network
             {
                 writer.Write(sceneName); writer.Write(spawnPointId); writer.Write(generation); writer.Write(epoch);
                 writer.Write(position.x); writer.Write(position.y); writer.Write(position.z);
-                writer.Write(orientation); writer.Write(state); writer.Write(walking); writer.Write(currentHealth);
+                writer.Write(orientation); writer.Write(state); writer.Write(specialState); writer.Write(walking); writer.Write(currentHealth);
                 QueueMesssage(stream.ToArray(), NetworkType.EnemyPosition);
             }
         }
@@ -629,16 +630,49 @@ namespace Blasphemous.Multiplayer.Client.Network
                     int generation = reader.ReadInt32();
                     long epoch = reader.ReadInt64();
                     Vector3 position = new Vector3(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
-                    byte orientation = reader.ReadByte(); byte state = reader.ReadByte(); bool walking = reader.ReadBoolean();
+                    byte orientation = reader.ReadByte(); byte state = reader.ReadByte(); byte specialState = reader.ReadByte(); bool walking = reader.ReadBoolean();
                     float currentHealth = reader.ReadSingle();
-                    if (stream.Position != stream.Length || generation < 0 || epoch < 0 || orientation > 1 || state > 4 || currentHealth <= 0f ||
+                    if (stream.Position != stream.Length || generation < 0 || epoch < 0 || orientation > 1 || state > 4 || specialState > 2 || currentHealth <= 0f ||
                         float.IsNaN(currentHealth) || float.IsInfinity(currentHealth) ||
                         float.IsNaN(position.x) || float.IsInfinity(position.x) || float.IsNaN(position.y) || float.IsInfinity(position.y) ||
                         float.IsNaN(position.z) || float.IsInfinity(position.z)) return;
-                    EnemyDeathSyncManager.ApplyRemotePosition(sceneName, spawnPointId, generation, epoch, position, orientation, state, walking, currentHealth);
+                    EnemyDeathSyncManager.ApplyRemotePosition(sceneName, spawnPointId, generation, epoch, position, orientation, state, specialState, walking, currentHealth);
                 }
             }
             catch (Exception ex) { ModLog.Warn($"Ignored malformed enemy position packet: {ex.GetType().Name}: {ex.Message}"); }
+        }
+
+        public void SendEnemyStateReport(string sceneName, string spawnPointId, int generation, long epoch, byte state, byte orientation)
+        {
+            if (!IsConnected || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
+                generation < 0 || epoch < 0 || state > 2 || orientation > 1) return;
+            using (MemoryStream stream = new MemoryStream())
+            using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8))
+            {
+                writer.Write(sceneName); writer.Write(spawnPointId); writer.Write(generation); writer.Write(epoch);
+                writer.Write(state); writer.Write(orientation);
+                QueueMesssage(stream.ToArray(), NetworkType.EnemyStateReport);
+            }
+        }
+
+        private void ReceiveEnemyStateReport(byte[] data)
+        {
+            try
+            {
+                int offset = ExtractNameFromData(data, out string sourcePlayerName);
+                using (MemoryStream stream = new MemoryStream(data, offset, data.Length - offset))
+                using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
+                {
+                    string sceneName = reader.ReadString(); string spawnPointId = reader.ReadString();
+                    int generation = reader.ReadInt32(); long epoch = reader.ReadInt64();
+                    byte state = reader.ReadByte(); byte orientation = reader.ReadByte();
+                    if (stream.Position != stream.Length || generation < 0 || epoch < 0 || state > 2 || orientation > 1 ||
+                        string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || string.IsNullOrEmpty(sourcePlayerName)) return;
+                    EnemyDeathSyncManager.ApplyRemoteWheelCarrierStateReport(sourcePlayerName, sceneName, spawnPointId,
+                        generation, epoch, state, orientation);
+                }
+            }
+            catch (Exception ex) { ModLog.Warn($"Ignored malformed WheelCarrier state report: {ex.GetType().Name}: {ex.Message}"); }
         }
 
         public void SendEnemyAttack(string sceneName, string spawnPointId, int generation, long epoch, byte orientation)

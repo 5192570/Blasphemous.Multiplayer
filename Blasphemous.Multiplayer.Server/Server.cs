@@ -135,6 +135,7 @@ public class Server
                 case NetworkType.EnemyHealth:  Logger.Warn("Ignored legacy non-authoritative enemy health packet"); break;
                 case NetworkType.EnemyHit:     receivePlayerEnemyHit(e.ip, data); break;
                 case NetworkType.EnemyDamageReport: receivePlayerEnemyDamageReport(e.ip, data); break;
+                case NetworkType.EnemyStateReport: receivePlayerEnemyStateReport(e.ip, data); break;
                 case NetworkType.EnemyPosition: receivePlayerEnemyPosition(e.ip, data); break;
                 case NetworkType.PlayerImpact: receivePlayerImpact(e.ip, data); break;
                 case NetworkType.EnemyAttack: receivePlayerEnemyAttack(e.ip, data); break;
@@ -929,6 +930,38 @@ public class Server
         }
         catch (Exception ex) { Logger.Warn($"Ignored malformed enemy damage report: {ex.GetType().Name}: {ex.Message}"); }
     }
+    // Follower WheelCarrier state transitions are routed only to the assigned scene host.
+    private void receivePlayerEnemyStateReport(string playerIp, byte[] data)
+    {
+        if (data == null || data.Length == 0) return;
+        try
+        {
+            string sceneName; string spawnPointId; int generation; long epoch; byte state; byte orientation;
+            using (MemoryStream stream = new MemoryStream(data))
+            using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
+            {
+                sceneName = reader.ReadString(); spawnPointId = reader.ReadString();
+                generation = reader.ReadInt32(); epoch = reader.ReadInt64();
+                state = reader.ReadByte(); orientation = reader.ReadByte();
+                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
+                    generation < 0 || epoch < 0 || state > 2 || orientation > 1) return;
+            }
+
+            PlayerInfo sender = getCurrentPlayer(playerIp);
+            if (sender == null || sender.sceneName != sceneName ||
+                !_sceneAuthority.TryGetHost(sceneName, out string hostIp, out long currentEpoch) || currentEpoch != epoch)
+            {
+                Logger.Warn($"Rejected WheelCarrier state report from wrong scene or stale epoch: player={sender?.name}, scene={sceneName}, epoch={epoch}");
+                return;
+            }
+            if (hostIp == playerIp) return;
+            List<byte> routed = addPlayerNameToData(sender.name);
+            routed.AddRange(data);
+            Send(hostIp, routed.ToArray(), NetworkType.EnemyStateReport);
+        }
+        catch (Exception ex) { Logger.Warn($"Ignored malformed WheelCarrier state report: {ex.GetType().Name}: {ex.Message}"); }
+    }
+
     // Shared enemy health delta
 
     private void receivePlayerEnemyHealth(string playerIp, byte[] data)
@@ -1007,10 +1040,10 @@ public class Server
                 sceneName = reader.ReadString(); string spawnPointId = reader.ReadString();
                 int generation = reader.ReadInt32(); epoch = reader.ReadInt64();
                 float x = reader.ReadSingle(); float y = reader.ReadSingle(); float z = reader.ReadSingle();
-                byte orientation = reader.ReadByte(); byte state = reader.ReadByte(); bool walking = reader.ReadBoolean();
+                byte orientation = reader.ReadByte(); byte state = reader.ReadByte(); byte specialState = reader.ReadByte(); bool walking = reader.ReadBoolean();
                 float currentHealth = reader.ReadSingle();
                 if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 ||
-                    orientation > 1 || state > 4 || currentHealth <= 0f || float.IsNaN(currentHealth) || float.IsInfinity(currentHealth) ||
+                    orientation > 1 || state > 4 || specialState > 2 || currentHealth <= 0f || float.IsNaN(currentHealth) || float.IsInfinity(currentHealth) ||
                     float.IsNaN(x) || float.IsInfinity(x) || float.IsNaN(y) || float.IsInfinity(y) || float.IsNaN(z) || float.IsInfinity(z)) return;
             }
             PlayerInfo current = getCurrentPlayer(playerIp);

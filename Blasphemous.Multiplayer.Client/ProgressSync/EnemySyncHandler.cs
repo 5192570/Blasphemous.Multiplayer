@@ -21,6 +21,8 @@ public abstract class EnemySyncHandler : MonoBehaviour
     protected virtual void OnAttach() { }
 
     internal abstract bool IsWalking { get; }
+    internal virtual byte SpecialState => 0;
+    internal virtual void ApplySpecialState(byte state) { }
     internal abstract bool SyncHitOnDamage { get; }
     internal abstract void SetAuthority(bool authority);
     internal abstract void SetTarget(GameObject target);

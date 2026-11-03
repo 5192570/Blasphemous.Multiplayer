@@ -5,6 +5,7 @@ using System.Globalization;
 using Blasphemous.ModdingAPI;
 using Framework.Managers;
 using Gameplay.GameControllers.Enemies.Framework.Damage;
+using Gameplay.GameControllers.Enemies.WheelCarrier;
 using Gameplay.GameControllers.Entities;
 using Framework.FrameworkCore;
 using HarmonyLib;
@@ -33,8 +34,18 @@ public static class EnemyDeathSyncManager
     internal static bool TryCaptureLocalHit(EnemyDamageArea damageArea, Hit hit, out EnemyDamageContext context)
     {
         context = null;
-        if (applyingRemoteDeath || applyingRemoteDamage || Main.Multiplayer == null || Main.Multiplayer.NetworkManager == null ||
-            !Main.Multiplayer.NetworkManager.IsConnected || Core.Logic.Penitent == null || damageArea == null)
+        if (damageArea == null) return false;
+        return TryCaptureLocalHit(damageArea.OwnerEntity as Enemy, hit, out context);
+    }
+
+    internal static bool TryCaptureLocalHit(Enemy enemy, Hit hit, out EnemyDamageContext context)
+    {
+        context = null;
+        // WheelCarrier.Damage wraps both its execution and ordinary damage branches.
+        // Its nested EnemyDamageArea call must not open a second context for the same hit.
+        if (enemy == null || (activeLocalHitContext != null && activeLocalHitContext.Enemy == enemy) ||
+            applyingRemoteDeath || applyingRemoteDamage || Main.Multiplayer == null || Main.Multiplayer.NetworkManager == null ||
+            !Main.Multiplayer.NetworkManager.IsConnected || Core.Logic.Penitent == null)
             return false;
 
         GameObject attacker = hit.AttackingEntity;
@@ -42,7 +53,6 @@ public static class EnemyDeathSyncManager
         if (attacker == null || (attacker != Core.Logic.Penitent.gameObject && !attacker.transform.IsChildOf(playerTransform)))
             return false;
 
-        Enemy enemy = damageArea.OwnerEntity as Enemy;
         if (!EnemySyncManager.Supports(enemy) || enemy.Status.Dead)
             return false;
 
@@ -392,9 +402,50 @@ public static class EnemyDeathSyncManager
         handler.ApplyRemoteHit(orientation);
     }
 
-    public static void ApplyRemotePosition(string sceneName, string spawnPointId, int generation, long epoch, Vector3 position, byte orientation, byte state, bool walking, float currentHealth)
+    internal static void ReportWheelCarrierStateChange(WheelCarrier wheelCarrier, byte state)
     {
-        if (orientation > 1 || state > 4 || currentHealth <= 0f || float.IsNaN(currentHealth) || float.IsInfinity(currentHealth) ||
+        if (wheelCarrier == null || state > 2 || Main.Multiplayer == null || Main.Multiplayer.NetworkManager == null ||
+            !Main.Multiplayer.NetworkManager.IsConnected ||
+            !TryGetSyncIdentity(wheelCarrier, out string sceneName, out string spawnPointId, out int generation) ||
+            !SceneAuthorityState.TryGet(sceneName, out string hostName, out long epoch) || string.IsNullOrEmpty(hostName) ||
+            string.Equals(hostName, Main.Multiplayer.PlayerName, StringComparison.Ordinal))
+            return;
+
+        Main.Multiplayer.NetworkManager.SendEnemyStateReport(sceneName, spawnPointId, generation, epoch, state,
+            (byte)wheelCarrier.Status.Orientation);
+        SharedDiagnosticLogger.Info($"[WheelCarrierStateSync] Reported local state scene={sceneName}, spawn={spawnPointId}, generation={generation}, state={state}, epoch={epoch}");
+    }
+
+    public static void ApplyRemoteWheelCarrierStateReport(string sourcePlayerName, string sceneName, string spawnPointId,
+        int generation, long epoch, byte state, byte orientation)
+    {
+        if (string.IsNullOrEmpty(sourcePlayerName) || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
+            generation < 0 || epoch < 0 || state > 2 || orientation > 1 ||
+            Core.LevelManager.currentLevel == null || Core.LevelManager.currentLevel.LevelName != sceneName ||
+            !SceneAuthorityState.TryGet(sceneName, out string hostName, out long currentEpoch) || currentEpoch != epoch ||
+            !string.Equals(hostName, Main.Multiplayer?.PlayerName, StringComparison.Ordinal) ||
+            string.Equals(hostName, sourcePlayerName, StringComparison.Ordinal) ||
+            GetGeneration(MakeGenerationKey(sceneName, spawnPointId)) != generation ||
+            !TryFindSpawnPoint(sceneName, spawnPointId, out EnemySpawnPoint point))
+            return;
+
+        if (point.SpawnedEnemy == null)
+            point.CreateEnemy();
+        if (!(point.SpawnedEnemy is WheelCarrier wheelCarrier))
+            return;
+
+        EnemySyncManager.Attach(wheelCarrier);
+        WheelCarrierEnemySyncHandler handler = wheelCarrier.GetComponent<WheelCarrierEnemySyncHandler>();
+        if (handler != null)
+        {
+            handler.ApplyRemoteSpecialState(state, orientation);
+            SharedDiagnosticLogger.Info($"[WheelCarrierStateSync] Host applied follower state scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, state={state}, epoch={epoch}");
+        }
+    }
+
+    public static void ApplyRemotePosition(string sceneName, string spawnPointId, int generation, long epoch, Vector3 position, byte orientation, byte state, byte specialState, bool walking, float currentHealth)
+    {
+        if (orientation > 1 || state > 4 || specialState > 2 || currentHealth <= 0f || float.IsNaN(currentHealth) || float.IsInfinity(currentHealth) ||
             string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 ||
             !SceneAuthorityState.TryGet(sceneName, out string assignedHost, out long currentEpoch) ||
             string.IsNullOrEmpty(assignedHost) || epoch != currentEpoch ||
@@ -417,7 +468,7 @@ public static class EnemyDeathSyncManager
         }
         if (sync == null) return;
         sync.NotePeerSnapshot(generation);
-        sync.ApplySnapshot(position, orientation, state, walking, currentHealth);
+        sync.ApplySnapshot(position, orientation, state, specialState, walking, currentHealth);
         pendingEnemyHealth.Remove(key);
     }
 

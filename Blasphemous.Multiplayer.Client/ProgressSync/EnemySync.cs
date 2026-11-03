@@ -80,7 +80,7 @@ public sealed class EnemySync : MonoBehaviour
             {
                 _nextSnapshot = Time.unscaledTime + SnapshotInterval;
                 Main.Multiplayer.NetworkManager.SendEnemyPosition(_sceneName, _spawnPointId, _generation, _authorityEpoch, _enemy.transform.position,
-                    (byte)_enemy.Status.Orientation, (byte)_enemy.entityCurrentState, _handler.IsWalking, _enemy.Stats.Life.Current);
+                    (byte)_enemy.Status.Orientation, (byte)_enemy.entityCurrentState, _handler.SpecialState, _handler.IsWalking, _enemy.Stats.Life.Current);
             }
         }
         else if (!_isAuthority)
@@ -112,9 +112,10 @@ public sealed class EnemySync : MonoBehaviour
         }
     }
 
-    internal void ApplySnapshot(Vector3 position, byte orientation, byte state, bool walking, float currentHealth)
+    internal void ApplySnapshot(Vector3 position, byte orientation, byte state, byte specialState, bool walking, float currentHealth)
     {
         if (_isAuthority || _enemy == null || _handler == null) return;
+        _handler.ApplySpecialState(specialState);
         ApplyHealth(currentHealth);
         _targetPosition = position;
         _hasSnapshot = true;

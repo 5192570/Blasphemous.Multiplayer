@@ -118,6 +118,7 @@ public class Server
                 case NetworkType.EnemyHit:     receivePlayerEnemyHit(e.ip, data); break;
                 case NetworkType.EnemyPosition: receivePlayerEnemyPosition(e.ip, data); break;
                 case NetworkType.PlayerImpact: receivePlayerImpact(e.ip, data); break;
+                case NetworkType.EnemyAttack: receivePlayerEnemyAttack(e.ip, data); break;
                 default:
                     Logger.Error($"Data type '{type}' is not valid"); break;
             }
@@ -892,6 +893,45 @@ public class Server
                     Send(ip, data, NetworkType.EnemyPosition);
         }
         catch (Exception ex) { Logger.Warn($"Ignored malformed enemy position packet: {ex.GetType().Name}: {ex.Message}"); }
+    }
+
+    // Targeted WheelCarrier attack event. Only the intended player should run the local hitbox.
+    private void receivePlayerEnemyAttack(string playerIp, byte[] data)
+    {
+        try
+        {
+            string sceneName;
+            string targetName;
+            using (MemoryStream stream = new MemoryStream(data))
+            using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
+            {
+                sceneName = reader.ReadString();
+                string spawnPointId = reader.ReadString();
+                int generation = reader.ReadInt32();
+                targetName = reader.ReadString();
+                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) ||
+                    string.IsNullOrEmpty(spawnPointId) || generation < 0 || string.IsNullOrEmpty(targetName)) return;
+            }
+
+            PlayerInfo sender = getCurrentPlayer(playerIp);
+            if (sender == null || sender.sceneName != sceneName || sender.name == targetName) return;
+
+            foreach (KeyValuePair<string, PlayerInfo> pair in connectedPlayers)
+            {
+                PlayerInfo target = pair.Value;
+                if (target != null && target.name == targetName && target.sceneName == sceneName && pair.Key != playerIp)
+                {
+                    List<byte> packet = addPlayerNameToData(sender.name);
+                    packet.AddRange(data);
+                    Send(pair.Key, packet.ToArray(), NetworkType.EnemyAttack);
+                    return;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Ignored malformed enemy attack packet: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
 }

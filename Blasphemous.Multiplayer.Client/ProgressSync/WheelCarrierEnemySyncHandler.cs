@@ -1,6 +1,7 @@
 using Framework.FrameworkCore;
 using Framework.Managers;
 using Gameplay.GameControllers.Enemies.WheelCarrier;
+using Gameplay.GameControllers.Enemies.WheelCarrier.Animator;
 using Gameplay.GameControllers.Entities;
 using UnityEngine;
 

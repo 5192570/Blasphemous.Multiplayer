@@ -76,6 +76,7 @@ namespace Blasphemous.Multiplayer.Client.Network
             _client = null;
             sendingQueue.Clear();
             receivingQueue.Clear();
+            SharedDiagnosticLogger.ResetSession();
 
             ModLog.Info("Disconnected from server");
             Main.Multiplayer.OnDisconnect();
@@ -97,7 +98,25 @@ namespace Blasphemous.Multiplayer.Client.Network
 
         public void SendQueue()
         {
-            if (sendingQueue.Count == 0 || _connectionStatus == ConnectionStatus.Disconnected) return;
+            if (_connectionStatus == ConnectionStatus.Disconnected || _client == null)
+                return;
+
+            // Flush normal gameplay traffic first. Shared diagnostics use a separate,
+            // small write afterward so a burst of log entries cannot delay game packets.
+            SendPendingQueue();
+
+            byte[] diagnosticBatch = SharedDiagnosticLogger.TakeBatch();
+            if (diagnosticBatch != null && _connectionStatus != ConnectionStatus.Disconnected)
+            {
+                QueueMesssage(diagnosticBatch, NetworkType.DiagnosticBatch);
+                SendPendingQueue();
+            }
+        }
+
+        private void SendPendingQueue()
+        {
+            if (sendingQueue.Count == 0 || _connectionStatus == ConnectionStatus.Disconnected || _client == null)
+                return;
 
             try
             {
@@ -110,6 +129,31 @@ namespace Blasphemous.Multiplayer.Client.Network
             finally
             {
                 sendingQueue.Clear();
+            }
+        }
+
+        private void ReceiveDiagnosticControl(byte[] data)
+        {
+            try
+            {
+                using (MemoryStream stream = new MemoryStream(data))
+                using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
+                {
+                    string sessionId = reader.ReadString();
+                    string collectorName = reader.ReadString();
+                    long serverElapsedMilliseconds = reader.ReadInt64();
+                    if (stream.Position != stream.Length || string.IsNullOrEmpty(sessionId))
+                        return;
+
+                    bool isCollector = Main.Multiplayer != null &&
+                        !string.IsNullOrEmpty(Main.Multiplayer.PlayerName) &&
+                        Main.Multiplayer.PlayerName == collectorName;
+                    SharedDiagnosticLogger.SetSession(sessionId, collectorName, isCollector, serverElapsedMilliseconds);
+                }
+            }
+            catch (Exception ex)
+            {
+                ModLog.Warn($"[SharedDiag] Ignored malformed collector assignment: {ex.GetType().Name}: {ex.Message}");
             }
         }
 
@@ -159,6 +203,8 @@ namespace Blasphemous.Multiplayer.Client.Network
                         case NetworkType.EnemyPosition: ReceiveEnemyPosition(messageData); break;
                         case NetworkType.PlayerImpact: ReceivePlayerImpact(messageData); break;
                         case NetworkType.EnemyAttack: ReceiveEnemyAttack(messageData); break;
+                        case NetworkType.DiagnosticControl: ReceiveDiagnosticControl(messageData); break;
+                        case NetworkType.DiagnosticBatch: SharedDiagnosticLogger.ReceiveMergedBatch(messageData); break;
                     }
                     startIdx += 3 + length;
                 }

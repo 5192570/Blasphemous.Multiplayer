@@ -603,8 +603,13 @@ namespace Blasphemous.Multiplayer.Client.Network
                     int generation = reader.ReadInt32();
                     byte orientation = reader.ReadByte();
                     if (stream.Position != stream.Length || generation < 0 || orientation > 1 || string.IsNullOrEmpty(sceneName) ||
-                        string.IsNullOrEmpty(spawnPointId)) return;
+                        string.IsNullOrEmpty(spawnPointId))
+                    {
+                        ModLog.Warn($"[EnemyAttackSyncDiag] Network packet rejected as malformed after sender parse source={sourcePlayerName}, payloadLength={data.Length}");
+                        return;
+                    }
 
+                    ModLog.Info($"[EnemyAttackSyncDiag] Network packet received source={sourcePlayerName}, scene={sceneName}, spawn={spawnPointId}, generation={generation}, orientation={orientation}, localPlayer={Main.Multiplayer?.PlayerName}");
                     EnemyDeathSyncManager.ApplyRemoteAttack(sceneName, spawnPointId, generation, orientation, sourcePlayerName);
                 }
             }

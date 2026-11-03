@@ -73,6 +73,48 @@ public static class EnemyDeathSyncManager
         return true;
     }
 
+    /// <summary>
+    /// Reports a local death that no enemy.Damage(Hit) call produced. Without this the
+    /// WheelCarrier riposte desyncs: Execution.OnUse kills the enemy with KillEntity(),
+    /// which never opens a damage context, so the client whose Penitent performed the
+    /// riposte destroys its copy silently while the authority keeps a one-hit-point
+    /// leftover that still publishes snapshots (frozen AI, unhittable enemy).
+    /// </summary>
+    internal static void ReportUnattributedLocalDeath(Entity entity)
+    {
+        if (!(entity is Enemy enemy) || enemy.gameObject == null || !enemy.gameObject.activeInHierarchy)
+            return;
+        if (applyingRemoteDeath || applyingRemoteDamage || !enemy.Status.Dead)
+            return;
+        if (!EnemySyncManager.Supports(enemy))
+            return;
+        // A death produced by a local hit is already reported by CompleteLocalHit.
+        if (activeLocalHitContext != null && activeLocalHitContext.Enemy == enemy)
+            return;
+        if (Main.Multiplayer == null || Main.Multiplayer.NetworkManager == null || !Main.Multiplayer.NetworkManager.IsConnected)
+            return;
+        if (!TryGetSyncIdentity(enemy, out string sceneName, out string spawnPointId, out int generation))
+            return;
+        if (GetGeneration(MakeGenerationKey(sceneName, spawnPointId)) != generation)
+            return;
+        if (!SceneAuthorityState.TryGet(sceneName, out string hostName, out long epoch) || string.IsNullOrEmpty(hostName))
+            return;
+
+        if (string.Equals(hostName, Main.Multiplayer.PlayerName, StringComparison.Ordinal))
+        {
+            SharedDiagnosticLogger.Info($"[EnemyDeathSync] Authority committed unattributed death scene={sceneName}, spawn={spawnPointId}, generation={generation}, type={enemy.GetType().Name}");
+            CommitAuthorityDeath(sceneName, spawnPointId, generation, epoch);
+            return;
+        }
+
+        // Report enough damage to reach zero so the authority commits the same death.
+        float lethalDamage = Mathf.Max(enemy.Stats.Life.Final, 1f) + enemy.Stats.Defense.Final;
+        string hitId = "kill-" + Guid.NewGuid().ToString("N");
+        SharedDiagnosticLogger.Info($"[EnemyDamageSync] Reporting unattributed lethal hit scene={sceneName}, spawn={spawnPointId}, generation={generation}, type={enemy.GetType().Name}, damage={lethalDamage:0.###}, hit={hitId}");
+        Main.Multiplayer.NetworkManager.SendEnemyDamageReport(sceneName, spawnPointId, generation, epoch,
+            GetRevision(sceneName, spawnPointId, generation, epoch), hitId, lethalDamage, string.Empty, 0, (byte)enemy.Status.Orientation);
+    }
+
     internal static void CompleteLocalHit(EnemyDamageContext context)
     {
         if (context == null || !context.Valid || applyingRemoteDeath || context.Enemy == null)
@@ -858,6 +900,11 @@ internal static class EnemyPredictedDeathSuppression_Patch
         __instance.SetHealth(1f);
         return false;
     }
+
+    // Deaths raised outside a captured hit (riposte finishers, environmental kills)
+    // still have to reach the authority.
+    [HarmonyPostfix]
+    private static void Postfix(Entity __instance) => EnemyDeathSyncManager.ReportUnattributedLocalDeath(__instance);
 }
 [HarmonyPatch(typeof(EnemySpawnPoint), nameof(EnemySpawnPoint.CreateEnemy))]
 internal static class EnemySpawnPointDeathSync_Patch

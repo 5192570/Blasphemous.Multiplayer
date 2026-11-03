@@ -50,6 +50,7 @@ public sealed class EnemySync : MonoBehaviour
     private void Update()
     {
         if (_enemy == null || _handler == null) return;
+        _handler.OnSyncUpdate();
         if (Main.Multiplayer == null || Main.Multiplayer.NetworkManager == null || !Main.Multiplayer.NetworkManager.IsConnected)
         {
             SetAuthority(true);

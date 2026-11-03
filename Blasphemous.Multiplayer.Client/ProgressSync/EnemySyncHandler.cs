@@ -20,6 +20,10 @@ public abstract class EnemySyncHandler : MonoBehaviour
 
     protected virtual void OnAttach() { }
 
+    // Runs every frame from the shared sync component, before any authority decision,
+    // so handlers can expire local presentation state that has no native completion path.
+    internal virtual void OnSyncUpdate() { }
+
     internal abstract bool IsWalking { get; }
     internal virtual byte SpecialState => 0;
     internal virtual void ApplySpecialState(byte state) { }

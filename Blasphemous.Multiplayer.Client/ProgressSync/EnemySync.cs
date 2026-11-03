@@ -216,7 +216,7 @@ public sealed class EnemySync : MonoBehaviour
         OtherPlayerScript remotePlayer = target.GetComponent<OtherPlayerScript>();
         if (remotePlayer == null || string.IsNullOrEmpty(remotePlayer.PlayerName)) return;
 
-        Main.Multiplayer.NetworkManager.SendEnemyAttack(_sceneName, _spawnPointId, _generation, remotePlayer.PlayerName);
+        Main.Multiplayer.NetworkManager.SendEnemyAttack(_sceneName, _spawnPointId, _generation, (byte)_enemy.Status.Orientation, remotePlayer.PlayerName);
     }
 
     internal bool IsExpectedAuthority(string playerName)

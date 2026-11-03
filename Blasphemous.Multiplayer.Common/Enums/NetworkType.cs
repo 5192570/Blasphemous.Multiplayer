@@ -22,4 +22,5 @@ public enum NetworkType
     EnemyHit = 16,
     EnemyPosition = 17,
     PlayerImpact = 18,
+    EnemyAttack = 19,
 }

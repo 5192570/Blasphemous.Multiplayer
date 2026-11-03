@@ -571,10 +571,10 @@ namespace Blasphemous.Multiplayer.Client.Network
             catch (Exception ex) { ModLog.Warn($"Ignored malformed enemy position packet: {ex.GetType().Name}: {ex.Message}"); }
         }
 
-        public void SendEnemyAttack(string sceneName, string spawnPointId, int generation, string targetPlayerName)
+        public void SendEnemyAttack(string sceneName, string spawnPointId, int generation, byte orientation, string targetPlayerName)
         {
             if (!IsConnected || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
-                generation < 0 || string.IsNullOrEmpty(targetPlayerName)) return;
+                generation < 0 || orientation > 1 || string.IsNullOrEmpty(targetPlayerName)) return;
 
             using (MemoryStream stream = new MemoryStream())
             using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8))
@@ -582,6 +582,7 @@ namespace Blasphemous.Multiplayer.Client.Network
                 writer.Write(sceneName);
                 writer.Write(spawnPointId);
                 writer.Write(generation);
+                writer.Write(orientation);
                 writer.Write(targetPlayerName);
                 QueueMesssage(stream.ToArray(), NetworkType.EnemyAttack);
             }
@@ -601,11 +602,12 @@ namespace Blasphemous.Multiplayer.Client.Network
                     string sceneName = reader.ReadString();
                     string spawnPointId = reader.ReadString();
                     int generation = reader.ReadInt32();
+                    byte orientation = reader.ReadByte();
                     string targetPlayerName = reader.ReadString();
-                    if (stream.Position != stream.Length || generation < 0 || string.IsNullOrEmpty(sceneName) ||
+                    if (stream.Position != stream.Length || generation < 0 || orientation > 1 || string.IsNullOrEmpty(sceneName) ||
                         string.IsNullOrEmpty(spawnPointId) || string.IsNullOrEmpty(targetPlayerName)) return;
 
-                    EnemyDeathSyncManager.ApplyRemoteAttack(sceneName, spawnPointId, generation, sourcePlayerName, targetPlayerName);
+                    EnemyDeathSyncManager.ApplyRemoteAttack(sceneName, spawnPointId, generation, orientation, sourcePlayerName, targetPlayerName);
                 }
             }
             catch (Exception ex)

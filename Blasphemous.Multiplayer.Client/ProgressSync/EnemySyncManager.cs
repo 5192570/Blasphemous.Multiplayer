@@ -1,4 +1,5 @@
 using Blasphemous.ModdingAPI;
+using Blasphemous.Multiplayer.Client.Network;
 using Gameplay.GameControllers.Entities;
 
 namespace Blasphemous.Multiplayer.Client.ProgressSync;
@@ -59,7 +60,7 @@ internal static class EnemySyncManager
         if (isWheelCarrier && (addedHandler || addedSync))
         {
             bool hasIdentity = EnemyDeathSyncManager.TryGetSyncIdentity(enemy, out string scene, out string spawn, out int generation);
-            ModLog.Info($"[EnemySyncDiag] WheelCarrier registered scene={(hasIdentity ? scene : "<unresolved>")}, spawn={(hasIdentity ? spawn : "<unresolved>")}, generation={(hasIdentity ? generation : -1)}, enemyInstance={enemy.GetInstanceID()}, object={enemy.gameObject.name}, position={enemy.transform.position}, handler={handler.GetType().Name}, addedHandler={addedHandler}, addedSync={addedSync}");
+            SharedDiagnosticLogger.Info($"[EnemySyncDiag] WheelCarrier registered scene={(hasIdentity ? scene : "<unresolved>")}, spawn={(hasIdentity ? spawn : "<unresolved>")}, generation={(hasIdentity ? generation : -1)}, enemyInstance={enemy.GetInstanceID()}, object={enemy.gameObject.name}, position={enemy.transform.position}, handler={handler.GetType().Name}, addedHandler={addedHandler}, addedSync={addedSync}");
         }
     }
 

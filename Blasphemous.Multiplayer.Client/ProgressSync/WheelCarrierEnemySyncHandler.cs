@@ -94,6 +94,6 @@ internal static class WheelCarrierAttackSyncPatch
         if (wheelCarrier == null) return;
         WheelCarrierEnemySyncHandler handler = wheelCarrier.GetComponent<WheelCarrierEnemySyncHandler>();
         if (handler == null || handler.IsReplayingRemoteAttack) return;
-        wheelCarrier.GetComponent<EnemySync>()?.NotifyNativeAttackStarted(wheelCarrier.Target);
+        wheelCarrier.GetComponent<EnemySync>()?.NotifyNativeAttackStarted();
     }
 }

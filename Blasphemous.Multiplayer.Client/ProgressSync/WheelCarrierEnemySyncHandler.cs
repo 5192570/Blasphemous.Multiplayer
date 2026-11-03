@@ -1,9 +1,8 @@
 using Framework.FrameworkCore;
+using Framework.Managers;
 using Gameplay.GameControllers.Enemies.WheelCarrier;
 using Gameplay.GameControllers.Entities;
 using UnityEngine;
-
-namespace Blasphemous.Multiplayer.Client.ProgressSync;
 
 /// <summary>Gameplay adapter for Zealot (the WheelCarrier enemy class).</summary>
 public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
@@ -18,12 +17,17 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     internal override void SetAuthority(bool authority)
     {
         if (_wheelCarrier == null || _wheelCarrier.Behaviour == null) return;
+
         _wheelCarrier.Behaviour.EnableBehaviourOnLoad = authority;
         if (!authority)
         {
             _wheelCarrier.Behaviour.StopBehaviour();
             _wheelCarrier.Behaviour.StopMovement();
+            if (Core.Logic.Penitent != null)
+                _wheelCarrier.Target = Core.Logic.Penitent.gameObject;
         }
+
+        _wheelCarrier.Behaviour.enabled = authority;
     }
 
     internal override void SetTarget(GameObject target)

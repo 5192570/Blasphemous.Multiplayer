@@ -29,6 +29,7 @@ public sealed class EnemySync : MonoBehaviour
     internal bool IsAuthority => _isAuthority;
     private bool _hasSnapshot;
     private long _authorityEpoch = -1;
+    private long _lastSnapshotRevision = -1;
     private int _lastPeerSnapshotGeneration = -1;
     private float _lastPeerSnapshot = float.NegativeInfinity;
     private Vector3 _targetPosition;
@@ -70,8 +71,10 @@ public sealed class EnemySync : MonoBehaviour
             return;
         }
 
+        bool epochChanged = _authorityEpoch != epoch;
         _authorityEpoch = epoch;
         SetAuthority(string.Equals(Main.Multiplayer.PlayerName, hostName, StringComparison.Ordinal));
+        if (epochChanged && !_isAuthority) ResetFollowerSnapshotBaseline("authority epoch changed");
         LogAuthorityContextIfChanged();
         if (_isAuthority)
         {
@@ -79,7 +82,7 @@ public sealed class EnemySync : MonoBehaviour
             if (Time.unscaledTime >= _nextSnapshot)
             {
                 _nextSnapshot = Time.unscaledTime + SnapshotInterval;
-                Main.Multiplayer.NetworkManager.SendEnemyPosition(_sceneName, _spawnPointId, _generation, _authorityEpoch, _enemy.transform.position,
+                Main.Multiplayer.NetworkManager.SendEnemyPosition(_sceneName, _spawnPointId, _generation, _authorityEpoch, EnemyDeathSyncManager.GetRevision(_sceneName, _spawnPointId, _generation, _authorityEpoch), _enemy.transform.position,
                     (byte)_enemy.Status.Orientation, (byte)_enemy.entityCurrentState, _handler.SpecialState, _handler.IsWalking, _enemy.Stats.Life.Current);
             }
         }
@@ -93,13 +96,19 @@ public sealed class EnemySync : MonoBehaviour
         }
     }
 
-    internal void NotePeerSnapshot(int generation)
+    internal bool NotePeerSnapshot(int generation, long revision)
     {
         if (generation != _generation)
         {
             SharedDiagnosticLogger.Warn($"[EnemySyncDiag] Ignored peer snapshot for different generation scene={_sceneName}, spawn={_spawnPointId}, localGeneration={_generation}, packetGeneration={generation}");
-            return;
+            return false;
         }
+        if (revision < _lastSnapshotRevision)
+        {
+            SharedDiagnosticLogger.Warn($"[EnemyRevision] Ignored stale snapshot scene={_sceneName}, spawn={_spawnPointId}, generation={generation}, packetRevision={revision}, localRevision={_lastSnapshotRevision}");
+            return false;
+        }
+        _lastSnapshotRevision = revision;
 
         bool firstSnapshot = !_loggedFirstPeerSnapshot;
         bool peerWasStale = Time.unscaledTime - _lastPeerSnapshot >= PeerSnapshotTimeout;
@@ -110,6 +119,7 @@ public sealed class EnemySync : MonoBehaviour
             _loggedFirstPeerSnapshot = true;
             SharedDiagnosticLogger.Info($"[EnemySyncDiag] {(firstSnapshot ? "First" : "Resumed")} peer snapshot scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, localPlayer={Main.Multiplayer?.PlayerName}, enemyInstance={_enemy?.GetInstanceID()}");
         }
+        return true;
     }
 
     internal void ApplySnapshot(Vector3 position, byte orientation, byte state, byte specialState, bool walking, float currentHealth)
@@ -131,6 +141,7 @@ public sealed class EnemySync : MonoBehaviour
 
     private void RefreshIdentity()
     {
+        string previousIdentity = _sceneName + "::" + _spawnPointId + "::" + _generation;
         if (EnemyDeathSyncManager.TryGetSyncIdentity(_enemy, out string scene, out string spawn, out int generation))
         {
             _sceneName = scene; _spawnPointId = spawn; _generation = generation;
@@ -139,6 +150,8 @@ public sealed class EnemySync : MonoBehaviour
         {
             _sceneName = null; _spawnPointId = null; _generation = -1;
         }
+        string currentIdentity = _sceneName + "::" + _spawnPointId + "::" + _generation;
+        if (previousIdentity != currentIdentity && !_isAuthority) ResetFollowerSnapshotBaseline("enemy identity changed");
     }
 
  
@@ -187,6 +200,7 @@ public sealed class EnemySync : MonoBehaviour
         _committedTarget = null;
         _targetCommitmentUntil = 0f;
         if (authority) _hasSnapshot = false;
+        else ResetFollowerSnapshotBaseline("authority role changed");
         string localName = Main.Multiplayer == null ? "<offline>" : Main.Multiplayer.PlayerName;
         string preferredName = Main.Multiplayer == null ? "<offline>" : GetPreferredAuthorityName();
         bool peerPublishing = _lastPeerSnapshotGeneration == _generation && Time.unscaledTime - _lastPeerSnapshot < PeerSnapshotTimeout;
@@ -243,7 +257,8 @@ public sealed class EnemySync : MonoBehaviour
             SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Attack not sent: scene authority assignment unavailable scene={_sceneName}, spawn={_spawnPointId}");
             return;
         }
-        Main.Multiplayer.NetworkManager.SendEnemyAttack(_sceneName, _spawnPointId, _generation, _authorityEpoch, orientation);
+        Main.Multiplayer.NetworkManager.SendEnemyAttack(_sceneName, _spawnPointId, _generation, _authorityEpoch,
+            EnemyDeathSyncManager.GetRevision(_sceneName, _spawnPointId, _generation, _authorityEpoch), orientation);
     }
 
     internal bool IsExpectedAuthority(string playerName, long packetEpoch)
@@ -266,5 +281,15 @@ public sealed class EnemySync : MonoBehaviour
             if (player != null && player.gameObject == target && player.gameObject.activeInHierarchy) return true;
         }
         return false;
+    }
+
+    private void ResetFollowerSnapshotBaseline(string reason)
+    {
+        _hasSnapshot = false;
+        _lastSnapshotRevision = -1;
+        _lastPeerSnapshotGeneration = -1;
+        _lastPeerSnapshot = float.NegativeInfinity;
+        _targetPosition = _enemy == null ? Vector3.zero : _enemy.transform.position;
+        SharedDiagnosticLogger.Info($"[EnemyRevision] Reset follower snapshot baseline: {reason}, scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, epoch={_authorityEpoch}");
     }
 }

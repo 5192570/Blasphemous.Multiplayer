@@ -884,8 +884,8 @@ public class Server
             using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
             {
                 sceneName = reader.ReadString(); string spawnPointId = reader.ReadString();
-                int generation = reader.ReadInt32(); epoch = reader.ReadInt64();
-                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0) return;
+                int generation = reader.ReadInt32(); epoch = reader.ReadInt64(); long revision = reader.ReadInt64();
+                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 || revision < 0) return;
             }
             PlayerInfo current = getCurrentPlayer(playerIp);
             if (current == null || current.sceneName != sceneName || !_sceneAuthority.IsHost(playerIp, sceneName, epoch))
@@ -906,15 +906,15 @@ public class Server
         if (data == null || data.Length == 0) return;
         try
         {
-            string sceneName; long epoch; string spawnPointId; string hitId; int generation; float damage; byte orientation;
+            string sceneName; long epoch; long observedRevision; string spawnPointId; string hitId; int generation; float damage; byte orientation;
             using (MemoryStream stream = new MemoryStream(data))
             using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
             {
                 sceneName = reader.ReadString(); spawnPointId = reader.ReadString(); generation = reader.ReadInt32();
-                epoch = reader.ReadInt64(); hitId = reader.ReadString(); damage = reader.ReadSingle(); reader.ReadString(); byte damageType = reader.ReadByte(); orientation = reader.ReadByte();
+                epoch = reader.ReadInt64(); observedRevision = reader.ReadInt64(); hitId = reader.ReadString(); damage = reader.ReadSingle(); reader.ReadString(); byte damageType = reader.ReadByte(); orientation = reader.ReadByte();
                 if (damageType > 5) return;
                 if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
-                    generation < 0 || epoch < 0 || string.IsNullOrEmpty(hitId) || damage <= 0f || float.IsNaN(damage) ||
+                    generation < 0 || epoch < 0 || observedRevision < 0 || string.IsNullOrEmpty(hitId) || damage <= 0f || float.IsNaN(damage) ||
                     float.IsInfinity(damage) || orientation > 1) return;
             }
             PlayerInfo sender = getCurrentPlayer(playerIp);
@@ -936,15 +936,15 @@ public class Server
         if (data == null || data.Length == 0) return;
         try
         {
-            string sceneName; string spawnPointId; int generation; long epoch; byte state; byte orientation;
+            string sceneName; string spawnPointId; int generation; long epoch; long observedRevision; byte state; byte orientation;
             using (MemoryStream stream = new MemoryStream(data))
             using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
             {
                 sceneName = reader.ReadString(); spawnPointId = reader.ReadString();
-                generation = reader.ReadInt32(); epoch = reader.ReadInt64();
+                generation = reader.ReadInt32(); epoch = reader.ReadInt64(); observedRevision = reader.ReadInt64();
                 state = reader.ReadByte(); orientation = reader.ReadByte();
                 if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
-                    generation < 0 || epoch < 0 || state > 2 || orientation > 1) return;
+                    generation < 0 || epoch < 0 || observedRevision < 0 || state > 2 || orientation > 1) return;
             }
 
             PlayerInfo sender = getCurrentPlayer(playerIp);
@@ -1009,9 +1009,9 @@ public class Server
             using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
             {
                 sceneName = reader.ReadString(); string spawnPointId = reader.ReadString();
-                int generation = reader.ReadInt32(); epoch = reader.ReadInt64(); string hitSourcePlayerName = reader.ReadString(); byte damageType = reader.ReadByte(); byte orientation = reader.ReadByte();
+                int generation = reader.ReadInt32(); epoch = reader.ReadInt64(); long revision = reader.ReadInt64(); string hitSourcePlayerName = reader.ReadString(); byte damageType = reader.ReadByte(); byte orientation = reader.ReadByte();
                 if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
-                    generation < 0 || epoch < 0 || string.IsNullOrEmpty(hitSourcePlayerName) || damageType > 5 || orientation > 1) return;
+                    generation < 0 || epoch < 0 || revision < 0 || string.IsNullOrEmpty(hitSourcePlayerName) || damageType > 5 || orientation > 1) return;
             }
             PlayerInfo sender = getCurrentPlayer(playerIp);
             if (sender == null || sender.sceneName != sceneName || !_sceneAuthority.IsHost(playerIp, sceneName, epoch))
@@ -1038,11 +1038,11 @@ public class Server
             using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
             {
                 sceneName = reader.ReadString(); string spawnPointId = reader.ReadString();
-                int generation = reader.ReadInt32(); epoch = reader.ReadInt64();
+                int generation = reader.ReadInt32(); epoch = reader.ReadInt64(); long revision = reader.ReadInt64();
                 float x = reader.ReadSingle(); float y = reader.ReadSingle(); float z = reader.ReadSingle();
                 byte orientation = reader.ReadByte(); byte state = reader.ReadByte(); byte specialState = reader.ReadByte(); bool walking = reader.ReadBoolean();
                 float currentHealth = reader.ReadSingle();
-                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 ||
+                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 || revision < 0 ||
                     orientation > 1 || state > 4 || specialState > 2 || currentHealth <= 0f || float.IsNaN(currentHealth) || float.IsInfinity(currentHealth) ||
                     float.IsNaN(x) || float.IsInfinity(x) || float.IsNaN(y) || float.IsInfinity(y) || float.IsNaN(z) || float.IsInfinity(z)) return;
             }
@@ -1190,10 +1190,10 @@ public class Server
                 sceneName = reader.ReadString();
                 string spawnPointId = reader.ReadString();
                 int generation = reader.ReadInt32();
-                epoch = reader.ReadInt64();
+                epoch = reader.ReadInt64(); long revision = reader.ReadInt64();
                 byte orientation = reader.ReadByte();
                 if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) ||
-                    string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 || orientation > 1) return;
+                    string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 || revision < 0 || orientation > 1) return;
             }
 
             PlayerInfo sender = getCurrentPlayer(playerIp);

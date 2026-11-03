@@ -20,6 +20,9 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync;
 public static class EnemyDeathSyncManager
 {
     private static readonly Dictionary<string, int> generations = new Dictionary<string, int>();
+    // Per-incarnation authoritative ordering.  The key intentionally includes the epoch:
+    // a new scene host starts its own namespace at revision zero.
+    private static readonly Dictionary<string, long> revisions = new Dictionary<string, long>();
     private static readonly Dictionary<string, PendingEnemyHealth> pendingEnemyHealth = new Dictionary<string, PendingEnemyHealth>();
     private static readonly Dictionary<string, List<PendingDamageReport>> pendingDamageReports = new Dictionary<string, List<PendingDamageReport>>();
     private static readonly Dictionary<string, int> pendingRemoteDeaths = new Dictionary<string, int>();
@@ -90,8 +93,9 @@ public static class EnemyDeathSyncManager
             {
                 bool enteredHurtState = context.StartingState != EntityStates.Hurt && context.Enemy.entityCurrentState == EntityStates.Hurt;
                 bool handlerNeedsHitCue = EnemySyncManager.TryGetHandler(context.Enemy, out EnemySyncHandler handler) && handler.SyncHitOnDamage;
+                long revision = AdvanceRevision(context.SceneName, context.SpawnPointId, current, context.Epoch, "local nonlethal damage");
                 if (enteredHurtState || handlerNeedsHitCue)
-                    Main.Multiplayer.NetworkManager.SendEnemyHit(context.SceneName, context.SpawnPointId, current, context.Epoch, Main.Multiplayer.PlayerName, (byte)context.DamageType, (byte)context.Enemy.Status.Orientation);
+                    Main.Multiplayer.NetworkManager.SendEnemyHit(context.SceneName, context.SpawnPointId, current, context.Epoch, revision, Main.Multiplayer.PlayerName, (byte)context.DamageType, (byte)context.Enemy.Status.Orientation);
             }
             return;
         }
@@ -104,7 +108,7 @@ public static class EnemyDeathSyncManager
         string hitId = Guid.NewGuid().ToString("N");
         SharedDiagnosticLogger.Info($"[EnemyDamageSync] Reporting resolved hit scene={context.SceneName}, spawn={context.SpawnPointId}, generation={current}, damage={context.ResolvedDamage:0.###}, hit={hitId}");
         Main.Multiplayer.NetworkManager.SendEnemyDamageReport(context.SceneName, context.SpawnPointId, current,
-            context.Epoch, hitId, context.ResolvedDamage, context.ImpactAudioId, (byte)context.DamageType, (byte)context.Enemy.Status.Orientation);
+            context.Epoch, GetRevision(context.SceneName, context.SpawnPointId, current, context.Epoch), hitId, context.ResolvedDamage, context.ImpactAudioId, (byte)context.DamageType, (byte)context.Enemy.Status.Orientation);
     }
 
     private static void CommitAuthorityDeath(string sceneName, string spawnPointId, int generation, long epoch)
@@ -114,9 +118,10 @@ public static class EnemyDeathSyncManager
             return;
         string key = MakeGenerationKey(sceneName, spawnPointId);
         if (GetGeneration(key) != generation) return;
+        long revision = AdvanceRevision(sceneName, spawnPointId, generation, epoch, "committed death");
         generations[key] = generation + 1;
-        SharedDiagnosticLogger.Info($"[EnemyDeathSync] Authority committed death scene={sceneName}, spawn={spawnPointId}, generation={generation}, epoch={epoch}");
-        Main.Multiplayer.NetworkManager.SendEnemyDeath(sceneName, spawnPointId, generation, epoch);
+        SharedDiagnosticLogger.Info($"[EnemyDeathSync] Authority committed death scene={sceneName}, spawn={spawnPointId}, generation={generation}, epoch={epoch}, revision={revision}");
+        Main.Multiplayer.NetworkManager.SendEnemyDeath(sceneName, spawnPointId, generation, epoch, revision);
     }
 
     private static bool ApplyNativeHurtRecovery(Enemy enemy)
@@ -145,10 +150,10 @@ public static class EnemyDeathSyncManager
     }
 
     public static void ApplyAuthoritativeDamageReport(string sourcePlayerName, string sceneName, string spawnPointId,
-        int generation, long epoch, string hitId, float resolvedDamage, string impactAudioId, byte damageType, byte orientation)
+        int generation, long epoch, long observedRevision, string hitId, float resolvedDamage, string impactAudioId, byte damageType, byte orientation)
     {
         if (string.IsNullOrEmpty(sourcePlayerName) || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
-            generation < 0 || epoch < 0 || string.IsNullOrEmpty(hitId) || resolvedDamage <= 0f ||
+            generation < 0 || epoch < 0 || observedRevision < 0 || string.IsNullOrEmpty(hitId) || resolvedDamage <= 0f ||
             float.IsNaN(resolvedDamage) || float.IsInfinity(resolvedDamage) || damageType > 5 || orientation > 1)
             return;
         if (Core.LevelManager.currentLevel == null || Core.LevelManager.currentLevel.LevelName != sceneName ||
@@ -276,8 +281,9 @@ public static class EnemyDeathSyncManager
             if (dead) CommitAuthorityDeath(sceneName, spawnPointId, generation, epoch);
             else
             {
+                long revision = AdvanceRevision(sceneName, spawnPointId, generation, epoch, "reconciled nonlethal damage");
                 if (enteredHurtState || handler.SyncHitOnDamage || !wasActive)
-                    Main.Multiplayer.NetworkManager.SendEnemyHit(sceneName, spawnPointId, generation, epoch, sourcePlayerName, damageType, orientation);
+                    Main.Multiplayer.NetworkManager.SendEnemyHit(sceneName, spawnPointId, generation, epoch, revision, sourcePlayerName, damageType, orientation);
             }
         }
         finally { applyingRemoteDamage = false; }
@@ -303,12 +309,12 @@ public static class EnemyDeathSyncManager
         return EnemySyncManager.Supports(enemy) && !enemy.Status.Dead;
     }
 
-    public static void ApplyRemoteAttack(string sceneName, string spawnPointId, int generation, long epoch, byte orientation, string sourcePlayerName)
+    public static void ApplyRemoteAttack(string sceneName, string spawnPointId, int generation, long epoch, long revision, byte orientation, string sourcePlayerName)
     {
         SharedDiagnosticLogger.Info($"[EnemyAttackSyncDiag] Received attack scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, orientation={orientation}, localScene={Core.LevelManager.currentLevel?.LevelName}");
 
         if (string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 ||
-            orientation > 1 || string.IsNullOrEmpty(sourcePlayerName))
+            revision < 0 || orientation > 1 || string.IsNullOrEmpty(sourcePlayerName))
         {
             SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Rejected attack: invalid payload scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, orientation={orientation}");
             return;
@@ -333,6 +339,7 @@ public static class EnemyDeathSyncManager
             SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Rejected attack: generation mismatch scene={sceneName}, spawn={spawnPointId}, packetGeneration={generation}, localGeneration={localGeneration}, source={sourcePlayerName}");
             return;
         }
+        if (!AcceptRevision(sceneName, spawnPointId, generation, epoch, revision, "attack")) return;
 
         if (!TryFindSpawnPoint(sceneName, spawnPointId, out EnemySpawnPoint point))
         {
@@ -391,11 +398,12 @@ public static class EnemyDeathSyncManager
         }
     }
 
-    public static void ApplyRemoteHit(string authorityPlayerName, string hitSourcePlayerName, string sceneName, string spawnPointId, int generation, long epoch, byte damageType, byte orientation)
+    public static void ApplyRemoteHit(string authorityPlayerName, string hitSourcePlayerName, string sceneName, string spawnPointId, int generation, long epoch, long revision, byte damageType, byte orientation)
     {
         if (damageType > 5 || orientation > 1 || string.IsNullOrEmpty(authorityPlayerName) || string.IsNullOrEmpty(hitSourcePlayerName) ||
             !SceneAuthorityState.TryGet(sceneName, out string hostName, out long currentEpoch) || currentEpoch != epoch ||
             !string.Equals(hostName, authorityPlayerName, StringComparison.Ordinal) ||
+            revision < 0 || !AcceptRevision(sceneName, spawnPointId, generation, epoch, revision, "hit") ||
             !TryGetSpawnedEnemy(sceneName, spawnPointId, generation, out Enemy enemy) ||
             !EnemySyncManager.TryGetHandler(enemy, out EnemySyncHandler handler)) return;
         if (string.Equals(hitSourcePlayerName, Main.Multiplayer?.PlayerName, StringComparison.Ordinal)) return;
@@ -407,20 +415,25 @@ public static class EnemyDeathSyncManager
         if (wheelCarrier == null || state > 2 || Main.Multiplayer == null || Main.Multiplayer.NetworkManager == null ||
             !Main.Multiplayer.NetworkManager.IsConnected ||
             !TryGetSyncIdentity(wheelCarrier, out string sceneName, out string spawnPointId, out int generation) ||
-            !SceneAuthorityState.TryGet(sceneName, out string hostName, out long epoch) || string.IsNullOrEmpty(hostName) ||
-            string.Equals(hostName, Main.Multiplayer.PlayerName, StringComparison.Ordinal))
+            !SceneAuthorityState.TryGet(sceneName, out string hostName, out long epoch) || string.IsNullOrEmpty(hostName))
             return;
 
-        Main.Multiplayer.NetworkManager.SendEnemyStateReport(sceneName, spawnPointId, generation, epoch, state,
+        if (string.Equals(hostName, Main.Multiplayer.PlayerName, StringComparison.Ordinal))
+        {
+            AdvanceRevision(sceneName, spawnPointId, generation, epoch, "local WheelCarrier special-state transition");
+            return;
+        }
+
+        Main.Multiplayer.NetworkManager.SendEnemyStateReport(sceneName, spawnPointId, generation, epoch, GetRevision(sceneName, spawnPointId, generation, epoch), state,
             (byte)wheelCarrier.Status.Orientation);
         SharedDiagnosticLogger.Info($"[WheelCarrierStateSync] Reported local state scene={sceneName}, spawn={spawnPointId}, generation={generation}, state={state}, epoch={epoch}");
     }
 
     public static void ApplyRemoteWheelCarrierStateReport(string sourcePlayerName, string sceneName, string spawnPointId,
-        int generation, long epoch, byte state, byte orientation)
+        int generation, long epoch, long observedRevision, byte state, byte orientation)
     {
         if (string.IsNullOrEmpty(sourcePlayerName) || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
-            generation < 0 || epoch < 0 || state > 2 || orientation > 1 ||
+            generation < 0 || epoch < 0 || observedRevision < 0 || state > 2 || orientation > 1 ||
             Core.LevelManager.currentLevel == null || Core.LevelManager.currentLevel.LevelName != sceneName ||
             !SceneAuthorityState.TryGet(sceneName, out string hostName, out long currentEpoch) || currentEpoch != epoch ||
             !string.Equals(hostName, Main.Multiplayer?.PlayerName, StringComparison.Ordinal) ||
@@ -436,23 +449,25 @@ public static class EnemyDeathSyncManager
 
         EnemySyncManager.Attach(wheelCarrier);
         WheelCarrierEnemySyncHandler handler = wheelCarrier.GetComponent<WheelCarrierEnemySyncHandler>();
-        if (handler != null)
+        if (handler != null && handler.SpecialState != state)
         {
             handler.ApplyRemoteSpecialState(state, orientation);
-            SharedDiagnosticLogger.Info($"[WheelCarrierStateSync] Host applied follower state scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, state={state}, epoch={epoch}");
+            long revision = AdvanceRevision(sceneName, spawnPointId, generation, epoch, "WheelCarrier special-state transition");
+            SharedDiagnosticLogger.Info($"[WheelCarrierStateSync] Host applied follower state scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, state={state}, epoch={epoch}, revision={revision}");
         }
     }
 
-    public static void ApplyRemotePosition(string sceneName, string spawnPointId, int generation, long epoch, Vector3 position, byte orientation, byte state, byte specialState, bool walking, float currentHealth)
+    public static void ApplyRemotePosition(string sceneName, string spawnPointId, int generation, long epoch, long revision, Vector3 position, byte orientation, byte state, byte specialState, bool walking, float currentHealth)
     {
         if (orientation > 1 || state > 4 || specialState > 2 || currentHealth <= 0f || float.IsNaN(currentHealth) || float.IsInfinity(currentHealth) ||
-            string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 ||
+            string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 || revision < 0 ||
             !SceneAuthorityState.TryGet(sceneName, out string assignedHost, out long currentEpoch) ||
             string.IsNullOrEmpty(assignedHost) || epoch != currentEpoch ||
             Core.LevelManager.currentLevel == null || Core.LevelManager.currentLevel.LevelName != sceneName ||
             GetGeneration(MakeGenerationKey(sceneName, spawnPointId)) != generation) return;
 
         string key = MakeGenerationKey(sceneName, spawnPointId);
+        if (!AcceptRevision(sceneName, spawnPointId, generation, epoch, revision, "snapshot")) return;
         pendingEnemyHealth[key] = new PendingEnemyHealth(generation, currentHealth);
 
         if (!TryFindSpawnPoint(sceneName, spawnPointId, out EnemySpawnPoint point) ||
@@ -467,7 +482,7 @@ public static class EnemyDeathSyncManager
             sync = enemy.GetComponent<EnemySync>();
         }
         if (sync == null) return;
-        sync.NotePeerSnapshot(generation);
+        if (!sync.NotePeerSnapshot(generation, revision)) return;
         sync.ApplySnapshot(position, orientation, state, specialState, walking, currentHealth);
         pendingEnemyHealth.Remove(key);
     }
@@ -485,9 +500,9 @@ public static class EnemyDeathSyncManager
         return true;
     }
 
-    public static void ApplyRemoteDeath(string sceneName, string spawnPointId, int generation)
+    public static void ApplyRemoteDeath(string sceneName, string spawnPointId, int generation, long epoch, long revision)
     {
-        if (applyingRemoteDeath || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0)
+        if (applyingRemoteDeath || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 || revision < 0)
             return;
 
         string key = MakeGenerationKey(sceneName, spawnPointId);
@@ -503,6 +518,7 @@ public static class EnemyDeathSyncManager
 
         // Record and advance once, even when the receiver is in another scene. The pending
         // record survives scene changes and is consumed by CreateEnemy before native spawning.
+        if (!AcceptRevision(sceneName, spawnPointId, generation, epoch, revision, "death")) return;
         generations[key] = current + 1;
         pendingRemoteDeaths[key] = generation;
 
@@ -510,7 +526,7 @@ public static class EnemyDeathSyncManager
             TryFindSpawnPoint(sceneName, spawnPointId, out EnemySpawnPoint spawnPoint))
             ReconcilePendingDeath(spawnPoint);
 
-        SharedDiagnosticLogger.Info($"[EnemyDeathSync] Recorded remote death scene={sceneName}, spawn={spawnPointId}, generation={generation}");
+        SharedDiagnosticLogger.Info($"[EnemyDeathSync] Recorded remote death scene={sceneName}, spawn={spawnPointId}, generation={generation}, epoch={epoch}, revision={revision}");
     }
 
     internal static void ReconcilePendingDeath(EnemySpawnPoint spawnPoint)
@@ -602,6 +618,7 @@ public static class EnemyDeathSyncManager
     public static void ResetSession()
     {
         generations.Clear();
+        revisions.Clear();
         pendingEnemyHealth.Clear();
         pendingRemoteDeaths.Clear();
         pendingDamageReports.Clear();
@@ -641,6 +658,38 @@ public static class EnemyDeathSyncManager
     private static int GetGeneration(string key)
     {
         return generations.TryGetValue(key, out int generation) ? generation : 0;
+    }
+
+    internal static long GetRevision(string sceneName, string spawnPointId, int generation, long epoch)
+    {
+        string key = MakeRevisionKey(sceneName, spawnPointId, generation, epoch);
+        return revisions.TryGetValue(key, out long revision) ? revision : 0;
+    }
+
+    private static long AdvanceRevision(string sceneName, string spawnPointId, int generation, long epoch, string reason)
+    {
+        string key = MakeRevisionKey(sceneName, spawnPointId, generation, epoch);
+        long revision = GetRevision(sceneName, spawnPointId, generation, epoch) + 1;
+        revisions[key] = revision;
+        SharedDiagnosticLogger.Info($"[EnemyRevision] Advanced scene={sceneName}, spawn={spawnPointId}, generation={generation}, epoch={epoch}, revision={revision}, reason={reason}");
+        return revision;
+    }
+
+    private static bool AcceptRevision(string sceneName, string spawnPointId, int generation, long epoch, long revision, string kind)
+    {
+        long current = GetRevision(sceneName, spawnPointId, generation, epoch);
+        if (revision < current)
+        {
+            SharedDiagnosticLogger.Warn($"[EnemyRevision] Rejected stale {kind} scene={sceneName}, spawn={spawnPointId}, generation={generation}, epoch={epoch}, packetRevision={revision}, localRevision={current}");
+            return false;
+        }
+        if (revision > current) revisions[MakeRevisionKey(sceneName, spawnPointId, generation, epoch)] = revision;
+        return true;
+    }
+
+    private static string MakeRevisionKey(string sceneName, string spawnPointId, int generation, long epoch)
+    {
+        return sceneName + "::" + spawnPointId + "::" + generation + "::" + epoch;
     }
 
     private static string MakeGenerationKey(string sceneName, string spawnPointId)

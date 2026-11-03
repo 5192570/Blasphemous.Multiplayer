@@ -24,7 +24,6 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         if (_wheelCarrier != null && _wheelCarrier.Behaviour != null && _wheelCarrier.Behaviour.GotParry)
         {
             _specialState = _wheelCarrier.EntExecution != null && _wheelCarrier.EntExecution.enabled ? (byte)2 : (byte)1;
-            EnemyDeathSyncManager.ReportWheelCarrierStateChange(_wheelCarrier, _specialState);
         }
     }
 

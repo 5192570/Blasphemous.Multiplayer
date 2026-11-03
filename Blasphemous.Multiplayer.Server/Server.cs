@@ -55,6 +55,7 @@ public class Server
         _diagnosticSessionId = Guid.NewGuid().ToString("N");
         _diagnosticCollectorIp = null;
         _diagnosticRelaySequence = 0;
+        _diagnosticHistory.Clear();
         _diagnosticSessionClock = Stopwatch.StartNew();
 
         try

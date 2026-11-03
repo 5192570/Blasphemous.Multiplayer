@@ -150,6 +150,7 @@ namespace Blasphemous.Multiplayer.Client.Network
                         return;
 
                     byte[] batch = reader.ReadBytes(batchLength);
+                    string collectorReceivedUtc = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
                     lock (Sync)
                     {
                         if (!_isCollector || string.IsNullOrEmpty(_sessionId) || _sessionId != sessionId)
@@ -171,7 +172,7 @@ namespace Blasphemous.Multiplayer.Client.Network
                             if (message.Length > MaxMessageLength)
                                 message = message.Substring(0, MaxMessageLength);
 
-                            ModLog.Info($"[SharedDiagMerged] session={sessionId} serverMs={serverElapsedMilliseconds} relaySeq={relaySequence} source={sourceName} sourceSeq={sourceSequence} sourceMs={sourceElapsedMilliseconds} {message}");
+                            ModLog.Info($"[SharedDiagMerged] session={sessionId} serverMs={serverElapsedMilliseconds} relaySeq={relaySequence} collectorReceivedUtc={collectorReceivedUtc} source={sourceName} sourceSeq={sourceSequence} sourceMs={sourceElapsedMilliseconds} {message}");
                         }
 
                         if (batchStream.Position != batchStream.Length)

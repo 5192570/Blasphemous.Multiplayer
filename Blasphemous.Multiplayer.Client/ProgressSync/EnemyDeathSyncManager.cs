@@ -122,7 +122,10 @@ public static class EnemyDeathSyncManager
             !EnemySyncManager.TryGetHandler(enemy, out EnemySyncHandler handler)) return;
 
         if (handler is WheelCarrierEnemySyncHandler wheelCarrierHandler)
+        {
+            ModLog.Info($"[EnemyAttackSync] Applying WheelCarrier attack scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, orientation={orientation}");
             wheelCarrierHandler.ApplyRemoteAttack(orientation);
+        }
     }
 
     public static void ApplyRemoteHit(string sceneName, string spawnPointId, int generation, byte orientation)

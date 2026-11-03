@@ -169,7 +169,13 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
             if (_mirroringRemoteState && state != 0)
             {
                 _lastMirrorConfirmedAt = Time.unscaledTime;
-                if (!string.IsNullOrEmpty(ownerName)) _mirrorOwner = ownerName;
+                if (!string.IsNullOrEmpty(ownerName))
+                {
+                    _mirrorOwner = ownerName;
+                    // A report can only come from a player the server has already
+                    // announced, so receiving one proves the owner is present.
+                    if (!ownerIsAuthority) _mirrorOwnerPresenceKnown = true;
+                }
             }
             return;
         }
@@ -202,7 +208,12 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
             _mirroringRemoteState = state != 0;
             _mirrorOwner = ownerName ?? string.Empty;
             _mirrorOwnerIsAuthority = ownerIsAuthority;
-            _mirrorOwnerPresenceKnown = false;
+            // A routed report can only arrive for a player the server already announced,
+            // so the report itself proves the owner was present. Starting presence
+            // tracking from that fact (rather than from the first poll observing them)
+            // is what lets this mirror still be cleared when the owner disconnects
+            // before that poll ever sees them connected.
+            _mirrorOwnerPresenceKnown = !ownerIsAuthority && !string.IsNullOrEmpty(_mirrorOwner);
             _specialStateChangedAt = Time.unscaledTime;
             _lastMirrorConfirmedAt = Time.unscaledTime;
             ApplyMirrorPresentation();

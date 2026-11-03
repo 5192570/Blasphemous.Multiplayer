@@ -249,7 +249,7 @@ What replaced it:
 |---|---|
 | Owner finishes and reports `0` | report / snapshot `0` (normal path) |
 | Enemy dies | `ApplyDeath` / `ApplyAuthoritativeDamageReaction(dead)` clears the mirror |
-| Mirror owner (follower) leaves | `OnSyncUpdate` polls `AllConnectedPlayers`; drops the mirror once the owner was seen connected and disappears |
+| Mirror owner (follower) leaves | Presence is established by the report itself (a routed report can only come from a player the server already announced), so `OnSyncUpdate` can drop the mirror on its first poll after the owner disappears — even if it never observed the owner connected |
 | Scene authority handed over / epoch bumped | `EnemySync` → `OnAuthorityContextChanged` |
 | Connection lost / client becomes authority | `EnemySync` → `SetAuthority(true)` → mirror dropped |
 | Scene change | new enemy instance, new handler |

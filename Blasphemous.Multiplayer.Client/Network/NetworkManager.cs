@@ -26,6 +26,7 @@ namespace Blasphemous.Multiplayer.Client.Network
         private readonly List<byte> sendingQueue = new ();
         private readonly List<byte> receivingQueue = new ();
         private static readonly object datalock = new object();
+        private float _nextDiagnosticFlush;
 
         // Connection
 
@@ -104,6 +105,10 @@ namespace Blasphemous.Multiplayer.Client.Network
             // Flush normal gameplay traffic first. Shared diagnostics use a separate,
             // small write afterward so a burst of log entries cannot delay game packets.
             SendPendingQueue();
+
+            if (Time.unscaledTime < _nextDiagnosticFlush)
+                return;
+            _nextDiagnosticFlush = Time.unscaledTime + 0.1f;
 
             byte[] diagnosticBatch = SharedDiagnosticLogger.TakeBatch();
             if (diagnosticBatch != null && _connectionStatus != ConnectionStatus.Disconnected)

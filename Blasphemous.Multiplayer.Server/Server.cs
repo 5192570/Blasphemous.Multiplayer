@@ -972,11 +972,12 @@ public class Server
         try
         {
             string sceneName;
+            long epoch;
             using (MemoryStream stream = new MemoryStream(data))
             using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
             {
                 sceneName = reader.ReadString(); string spawnPointId = reader.ReadString();
-                int generation = reader.ReadInt32(); long epoch = reader.ReadInt64();
+                int generation = reader.ReadInt32(); epoch = reader.ReadInt64();
                 float x = reader.ReadSingle(); float y = reader.ReadSingle(); float z = reader.ReadSingle();
                 byte orientation = reader.ReadByte(); byte state = reader.ReadByte(); bool walking = reader.ReadBoolean();
                 float currentHealth = reader.ReadSingle();
@@ -1121,13 +1122,14 @@ public class Server
         try
         {
             string sceneName;
+            long epoch;
             using (MemoryStream stream = new MemoryStream(data))
             using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
             {
                 sceneName = reader.ReadString();
                 string spawnPointId = reader.ReadString();
                 int generation = reader.ReadInt32();
-                long epoch = reader.ReadInt64();
+                epoch = reader.ReadInt64();
                 byte orientation = reader.ReadByte();
                 if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) ||
                     string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 || orientation > 1) return;

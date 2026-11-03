@@ -14,15 +14,14 @@ namespace Blasphemous.Multiplayer.Client.Network
     internal static class SharedDiagnosticLogger
     {
         private const int MaxPendingEntries = 512;
-        private const int MaxBatchEntries = 8;
-        private const int MaxMessageLength = 1200;
+        private const int MaxBatchEntries = 2;
+        private const int MaxMessageLength = 900;
 
         private static readonly object Sync = new object();
         private static readonly Queue<Entry> Pending = new Queue<Entry>();
         private static readonly Stopwatch LocalClock = new Stopwatch();
         private static long _nextSequence;
         private static string _sessionId;
-        private static string _collectorName;
         private static bool _isCollector;
         private static int _droppedEntries;
 
@@ -68,12 +67,25 @@ namespace Blasphemous.Multiplayer.Client.Network
                 if (string.IsNullOrEmpty(_sessionId) || Pending.Count == 0)
                     return null;
 
-                int count = Math.Min(MaxBatchEntries, Pending.Count);
+                bool hasDropNotice = _droppedEntries > 0;
+                int count = Math.Min(MaxBatchEntries - (hasDropNotice ? 1 : 0), Pending.Count) + (hasDropNotice ? 1 : 0);
+                if (count <= 0)
+                    return null;
+
                 using (MemoryStream stream = new MemoryStream())
                 using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8))
                 {
                     writer.Write((ushort)count);
-                    for (int i = 0; i < count; i++)
+                    if (hasDropNotice)
+                    {
+                        writer.Write(0L);
+                        writer.Write(LocalClock.ElapsedMilliseconds);
+                        writer.Write($"[SharedDiag] Local queue dropped {_droppedEntries} oldest diagnostic entries");
+                        _droppedEntries = 0;
+                    }
+
+                    int queuedCount = count - (hasDropNotice ? 1 : 0);
+                    for (int i = 0; i < queuedCount; i++)
                     {
                         Entry entry = Pending.Dequeue();
                         writer.Write(entry.Sequence);
@@ -92,7 +104,6 @@ namespace Blasphemous.Multiplayer.Client.Network
             {
                 bool changed = _sessionId != sessionId;
                 _sessionId = sessionId;
-                _collectorName = collectorName ?? string.Empty;
                 _isCollector = isCollector;
                 if (changed)
                 {
@@ -112,7 +123,6 @@ namespace Blasphemous.Multiplayer.Client.Network
             lock (Sync)
             {
                 _sessionId = null;
-                _collectorName = null;
                 _isCollector = false;
                 Pending.Clear();
                 _nextSequence = 0;

@@ -105,7 +105,7 @@ public static class EnemyDeathSyncManager
         return EnemySyncManager.Supports(enemy) && !enemy.Status.Dead;
     }
 
-    public static void ApplyRemoteAttack(string sceneName, string spawnPointId, int generation, string sourcePlayerName, string targetPlayerName)
+    public static void ApplyRemoteAttack(string sceneName, string spawnPointId, int generation, byte orientation, string sourcePlayerName, string targetPlayerName)
     {
         if (string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 ||
             string.IsNullOrEmpty(sourcePlayerName) || string.IsNullOrEmpty(targetPlayerName) ||
@@ -123,7 +123,7 @@ public static class EnemyDeathSyncManager
             !EnemySyncManager.TryGetHandler(enemy, out EnemySyncHandler handler)) return;
 
         if (handler is WheelCarrierEnemySyncHandler wheelCarrierHandler)
-            wheelCarrierHandler.ApplyRemoteAttack();
+            wheelCarrierHandler.ApplyRemoteAttack(orientation);
     }
 
     public static void ApplyRemoteHit(string sceneName, string spawnPointId, int generation, byte orientation)

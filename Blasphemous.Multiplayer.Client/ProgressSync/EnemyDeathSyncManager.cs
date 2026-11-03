@@ -107,24 +107,82 @@ public static class EnemyDeathSyncManager
 
     public static void ApplyRemoteAttack(string sceneName, string spawnPointId, int generation, byte orientation, string sourcePlayerName)
     {
-        if (string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || orientation > 1 ||
-            string.IsNullOrEmpty(sourcePlayerName) || Core.LevelManager.currentLevel == null ||
-            Core.LevelManager.currentLevel.LevelName != sceneName ||
-            !TryGetSpawnedEnemy(sceneName, spawnPointId, generation, out Enemy enemy)) return;
+        ModLog.Info($"[EnemyAttackSyncDiag] Received attack scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, orientation={orientation}, localScene={Core.LevelManager.currentLevel?.LevelName}");
+
+        if (string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 ||
+            orientation > 1 || string.IsNullOrEmpty(sourcePlayerName))
+        {
+            ModLog.Warn($"[EnemyAttackSyncDiag] Rejected attack: invalid payload scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, orientation={orientation}");
+            return;
+        }
+
+        if (Core.LevelManager.currentLevel == null || Core.LevelManager.currentLevel.LevelName != sceneName)
+        {
+            ModLog.Warn($"[EnemyAttackSyncDiag] Rejected attack: scene mismatch packetScene={sceneName}, localScene={Core.LevelManager.currentLevel?.LevelName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}");
+            return;
+        }
+
+        int localGeneration = GetGeneration(MakeGenerationKey(sceneName, spawnPointId));
+        if (localGeneration != generation)
+        {
+            ModLog.Warn($"[EnemyAttackSyncDiag] Rejected attack: generation mismatch scene={sceneName}, spawn={spawnPointId}, packetGeneration={generation}, localGeneration={localGeneration}, source={sourcePlayerName}");
+            return;
+        }
+
+        if (!TryFindSpawnPoint(sceneName, spawnPointId, out EnemySpawnPoint point))
+        {
+            ModLog.Warn($"[EnemyAttackSyncDiag] Rejected attack: spawn point not found or identity ambiguous scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}");
+            return;
+        }
+
+        Enemy enemy = point.SpawnedEnemy;
+        if (enemy == null)
+        {
+            ModLog.Warn($"[EnemyAttackSyncDiag] Rejected attack: spawn point has no spawned enemy scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}");
+            return;
+        }
+        if (!EnemySyncManager.Supports(enemy) || enemy.Status.Dead)
+        {
+            ModLog.Warn($"[EnemyAttackSyncDiag] Rejected attack: unsupported or dead enemy type={enemy.GetType().Name}, dead={enemy.Status.Dead}, scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}");
+            return;
+        }
 
         EnemySync sync = enemy.GetComponent<EnemySync>();
         if (sync == null)
         {
+            ModLog.Warn($"[EnemyAttackSyncDiag] EnemySync missing; attempting late attach scene={sceneName}, spawn={spawnPointId}, generation={generation}, enemyInstance={enemy.GetInstanceID()}");
             EnemySyncManager.Attach(enemy);
             sync = enemy.GetComponent<EnemySync>();
         }
-        if (sync == null || sync.IsAuthority || !sync.IsExpectedAuthority(sourcePlayerName) ||
-            !EnemySyncManager.TryGetHandler(enemy, out EnemySyncHandler handler)) return;
+        if (sync == null)
+        {
+            ModLog.Warn($"[EnemyAttackSyncDiag] Rejected attack: EnemySync unavailable after attach scene={sceneName}, spawn={spawnPointId}, generation={generation}, enemyInstance={enemy.GetInstanceID()}");
+            return;
+        }
+        if (sync.IsAuthority)
+        {
+            ModLog.Warn($"[EnemyAttackSyncDiag] Rejected attack: receiver considers itself authoritative scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, enemyInstance={enemy.GetInstanceID()}");
+            return;
+        }
+        if (!sync.IsExpectedAuthority(sourcePlayerName))
+        {
+            ModLog.Warn($"[EnemyAttackSyncDiag] Rejected attack: sender failed authority validation scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, enemyInstance={enemy.GetInstanceID()}");
+            return;
+        }
+        if (!EnemySyncManager.TryGetHandler(enemy, out EnemySyncHandler handler))
+        {
+            ModLog.Warn($"[EnemyAttackSyncDiag] Rejected attack: sync handler missing scene={sceneName}, spawn={spawnPointId}, generation={generation}, enemyInstance={enemy.GetInstanceID()}");
+            return;
+        }
 
         if (handler is WheelCarrierEnemySyncHandler wheelCarrierHandler)
         {
-            ModLog.Info($"[EnemyAttackSync] Applying WheelCarrier attack scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, orientation={orientation}");
+            ModLog.Info($"[EnemyAttackSyncDiag] Applying attack scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, orientation={orientation}, enemyInstance={enemy.GetInstanceID()}, localPlayer={Main.Multiplayer?.PlayerName}");
             wheelCarrierHandler.ApplyRemoteAttack(orientation);
+        }
+        else
+        {
+            ModLog.Warn($"[EnemyAttackSyncDiag] Rejected attack: unexpected handler type={handler.GetType().Name}, scene={sceneName}, spawn={spawnPointId}, generation={generation}, enemyInstance={enemy.GetInstanceID()}");
         }
     }
 

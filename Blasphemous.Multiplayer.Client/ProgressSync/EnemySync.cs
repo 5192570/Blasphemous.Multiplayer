@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Client.Players;
 using Framework.FrameworkCore;
@@ -35,6 +36,7 @@ public sealed class EnemySync : MonoBehaviour
     private Vector3 _targetPosition;
     private GameObject _committedTarget;
     private float _targetCommitmentUntil;
+    private bool _loggedFirstPeerSnapshot;
 
     internal void Attach(EnemySyncHandler handler)
     {
@@ -91,9 +93,21 @@ public sealed class EnemySync : MonoBehaviour
 
     internal void NotePeerSnapshot(int generation)
     {
-        if (generation != _generation) return;
+        if (generation != _generation)
+        {
+            ModLog.Warn($"[EnemySyncDiag] Ignored peer snapshot for different generation scene={_sceneName}, spawn={_spawnPointId}, localGeneration={_generation}, packetGeneration={generation}");
+            return;
+        }
+
+        bool firstSnapshot = !_loggedFirstPeerSnapshot;
+        bool peerWasStale = Time.unscaledTime - _lastPeerSnapshot >= PeerSnapshotTimeout;
         _lastPeerSnapshotGeneration = generation;
         _lastPeerSnapshot = Time.unscaledTime;
+        if (firstSnapshot || peerWasStale)
+        {
+            _loggedFirstPeerSnapshot = true;
+            ModLog.Info($"[EnemySyncDiag] {(firstSnapshot ? "First" : "Resumed")} peer snapshot scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, localPlayer={Main.Multiplayer?.PlayerName}, enemyInstance={_enemy?.GetInstanceID()}");
+        }
     }
 
     internal void ApplySnapshot(Vector3 position, byte orientation, byte state, bool walking, float currentHealth)
@@ -151,17 +165,33 @@ public sealed class EnemySync : MonoBehaviour
         return nameWins && !peerPublishing;
     }
 
-    private bool IsLocalAuthority()
+    private string GetPreferredAuthorityName()
     {
-        string localName = Main.Multiplayer.PlayerName;
-        if (string.IsNullOrEmpty(localName)) return false;
-        string ownerName = localName;
+        if (Main.Multiplayer == null || string.IsNullOrEmpty(Main.Multiplayer.PlayerName)) return "<unknown>";
+        string ownerName = Main.Multiplayer.PlayerName;
         foreach (PlayerStatus player in Main.Multiplayer.OtherPlayerManager.AllConnectedPlayers)
         {
             if (player == null || player.CurrentScene != _sceneName || string.IsNullOrEmpty(player.Name)) continue;
             if (string.CompareOrdinal(player.Name, ownerName) < 0) ownerName = player.Name;
         }
-        return ownerName == localName;
+        return ownerName;
+    }
+
+    private string DescribePeers()
+    {
+        if (Main.Multiplayer == null) return "<offline>";
+        List<string> peers = new List<string>();
+        foreach (PlayerStatus player in Main.Multiplayer.OtherPlayerManager.AllConnectedPlayers)
+        {
+            if (player == null) continue;
+            peers.Add($"{player.Name}@{player.CurrentScene}");
+        }
+        return peers.Count == 0 ? "<none>" : string.Join(";", peers.ToArray());
+    }
+
+    private bool IsLocalAuthority()
+    {
+        return Main.Multiplayer != null && GetPreferredAuthorityName() == Main.Multiplayer.PlayerName;
     }
 
     private void SetAuthority(bool authority)
@@ -173,7 +203,10 @@ public sealed class EnemySync : MonoBehaviour
         _committedTarget = null;
         _targetCommitmentUntil = 0f;
         if (authority) _hasSnapshot = false;
-        ModLog.Info($"[EnemySync] Authority {(authority ? "local" : "remote-following")} for {_spawnPointId}");
+        string localName = Main.Multiplayer == null ? "<offline>" : Main.Multiplayer.PlayerName;
+        string preferredName = Main.Multiplayer == null ? "<offline>" : GetPreferredAuthorityName();
+        bool peerPublishing = _lastPeerSnapshotGeneration == _generation && Time.unscaledTime - _lastPeerSnapshot < PeerSnapshotTimeout;
+        ModLog.Info($"[EnemySyncDiag] Authority transition scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, enemyInstance={_enemy?.GetInstanceID()}, localPlayer={localName}, preferredPlayer={preferredName}, result={(authority ? "LOCAL" : "FOLLOWER")}, peerPublishing={peerPublishing}, peerSnapshotAge={(peerPublishing ? (Time.unscaledTime - _lastPeerSnapshot).ToString("0.000") : "stale")}, awaitingPeerState={_awaitingPeerState}, peers={DescribePeers()}");
     }
 
     private void UpdateTarget()
@@ -211,8 +244,13 @@ public sealed class EnemySync : MonoBehaviour
 
     internal void NotifyNativeAttackStarted()
     {
-        if (!_isAuthority || _enemy == null || Main.Multiplayer == null || Main.Multiplayer.NetworkManager == null)
+        if (_enemy == null || Main.Multiplayer == null || Main.Multiplayer.NetworkManager == null)
             return;
+        if (!_isAuthority)
+        {
+            ModLog.Warn($"[EnemyAttackSyncDiag] Native WheelCarrier attack observed but NOT SENT: local player is follower scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, enemyInstance={_enemy.GetInstanceID()}, localPlayer={Main.Multiplayer.PlayerName}, preferredPlayer={GetPreferredAuthorityName()}, peers={DescribePeers()}");
+            return;
+        }
 
         byte orientation = (byte)_enemy.Status.Orientation;
         ModLog.Info($"[EnemyAttackSync] Sending WheelCarrier attack scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, orientation={orientation}");
@@ -231,7 +269,10 @@ public sealed class EnemySync : MonoBehaviour
             if (string.IsNullOrEmpty(expected) || string.CompareOrdinal(player.Name, expected) < 0)
                 expected = player.Name;
         }
-        return expected == playerName;
+        bool accepted = expected == playerName;
+        if (!accepted)
+            ModLog.Warn($"[EnemyAttackSyncDiag] Authority sender mismatch scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, sender={playerName}, expected={expected}, localPlayer={Main.Multiplayer.PlayerName}, peers={DescribePeers()}, localIsAuthority={_isAuthority}");
+        return accepted;
     }
 
     private bool IsAvailableTarget(GameObject target)

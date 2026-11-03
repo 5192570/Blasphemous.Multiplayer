@@ -47,6 +47,26 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         else _wheelCarrier.AnimatorInyector.Stop();
     }
 
+    private bool _replayingRemoteAttack;
+
+    internal bool IsReplayingRemoteAttack => _replayingRemoteAttack;
+
+    internal void ApplyRemoteAttack()
+    {
+        if (_wheelCarrier == null || _wheelCarrier.AnimatorInyector == null || _wheelCarrier.IsAttacking)
+            return;
+
+        _replayingRemoteAttack = true;
+        try
+        {
+            _wheelCarrier.AnimatorInyector.Attack();
+        }
+        finally
+        {
+            _replayingRemoteAttack = false;
+        }
+    }
+
     internal override void ApplyRemoteHit(byte orientation)
     {
         if (_wheelCarrier == null) return;
@@ -59,5 +79,20 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         if (_wheelCarrier == null) return;
         if (_wheelCarrier.Behaviour != null) _wheelCarrier.Behaviour.Death();
         if (_wheelCarrier.Audio != null) _wheelCarrier.Audio.PlayDeath();
+    }
+}
+
+[HarmonyLib.HarmonyPatch(typeof(WheelCarrierAnimatorInyector), nameof(WheelCarrierAnimatorInyector.Attack))]
+internal static class WheelCarrierAttackSyncPatch
+{
+    [HarmonyLib.HarmonyPostfix]
+    private static void Postfix(WheelCarrierAnimatorInyector __instance)
+    {
+        if (__instance == null) return;
+        WheelCarrier wheelCarrier = __instance.GetComponentInParent<WheelCarrier>();
+        if (wheelCarrier == null) return;
+        WheelCarrierEnemySyncHandler handler = wheelCarrier.GetComponent<WheelCarrierEnemySyncHandler>();
+        if (handler == null || handler.IsReplayingRemoteAttack) return;
+        wheelCarrier.GetComponent<EnemySync>()?.NotifyNativeAttackStarted(wheelCarrier.Target);
     }
 }

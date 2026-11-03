@@ -169,7 +169,7 @@ public static class EnemyDeathSyncManager
         }
         if (point.SpawnedEnemy == null)
         {
-            QueuePendingDamageReport(key, sourcePlayerName, hitId, generation, resolvedDamage, impactAudioId, epoch, orientation);
+            QueuePendingDamageReport(key, sourcePlayerName, hitId, generation, resolvedDamage, impactAudioId, damageType, epoch, orientation);
             return;
         }
         Enemy enemy = point.SpawnedEnemy;

@@ -3,7 +3,7 @@ namespace Blasphemous.Multiplayer.Common;
 public static class Protocol
 {
     // Maybe use this instead of two separate ones
-    public const int VERSION = 11;
+    public const int VERSION = 12;
 
     /// <summary>
     /// The default ip used by client and server

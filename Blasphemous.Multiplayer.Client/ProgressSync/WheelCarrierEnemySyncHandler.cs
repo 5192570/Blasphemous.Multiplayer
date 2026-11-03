@@ -1,3 +1,4 @@
+using Blasphemous.ModdingAPI;
 using Framework.FrameworkCore;
 using Framework.Managers;
 using Gameplay.GameControllers.Enemies.WheelCarrier;
@@ -54,9 +55,23 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
 
     internal void ApplyRemoteAttack(byte orientation)
     {
-        if (_wheelCarrier == null || _wheelCarrier.AnimatorInyector == null || _wheelCarrier.IsAttacking)
+        if (_wheelCarrier == null)
+        {
+            ModLog.Warn("[EnemyAttackSyncDiag] Cannot replay attack: WheelCarrier reference is null");
             return;
+        }
+        if (_wheelCarrier.AnimatorInyector == null)
+        {
+            ModLog.Warn($"[EnemyAttackSyncDiag] Cannot replay attack: AnimatorInyector is null enemyInstance={_wheelCarrier.GetInstanceID()}, object={_wheelCarrier.gameObject.name}");
+            return;
+        }
+        if (_wheelCarrier.IsAttacking)
+        {
+            ModLog.Warn($"[EnemyAttackSyncDiag] Remote attack ignored: enemy already attacking enemyInstance={_wheelCarrier.GetInstanceID()}, object={_wheelCarrier.gameObject.name}");
+            return;
+        }
 
+        ModLog.Info($"[EnemyAttackSyncDiag] Triggering native attack enemyInstance={_wheelCarrier.GetInstanceID()}, object={_wheelCarrier.gameObject.name}, orientation={orientation}, position={_wheelCarrier.transform.position}");
         _wheelCarrier.SetOrientation((EntityOrientation)orientation);
         _replayingRemoteAttack = true;
         try
@@ -92,9 +107,28 @@ internal static class WheelCarrierAttackSyncPatch
     {
         if (__instance == null) return;
         WheelCarrier wheelCarrier = __instance.GetComponentInParent<WheelCarrier>();
-        if (wheelCarrier == null) return;
+        if (wheelCarrier == null)
+        {
+            ModLog.Warn($"[EnemyAttackSyncDiag] Native attack hook could not find parent WheelCarrier injectorInstance={__instance.GetInstanceID()}, object={__instance.gameObject.name}");
+            return;
+        }
+
         WheelCarrierEnemySyncHandler handler = wheelCarrier.GetComponent<WheelCarrierEnemySyncHandler>();
-        if (handler == null || handler.IsReplayingRemoteAttack) return;
-        wheelCarrier.GetComponent<EnemySync>()?.NotifyNativeAttackStarted();
+        if (handler == null)
+        {
+            ModLog.Warn($"[EnemyAttackSyncDiag] Native attack hook found WheelCarrier but no sync handler enemyInstance={wheelCarrier.GetInstanceID()}, object={wheelCarrier.gameObject.name}");
+            return;
+        }
+        if (handler.IsReplayingRemoteAttack) return;
+
+        EnemySync sync = wheelCarrier.GetComponent<EnemySync>();
+        if (sync == null)
+        {
+            ModLog.Warn($"[EnemyAttackSyncDiag] Native attack hook found no EnemySync enemyInstance={wheelCarrier.GetInstanceID()}, object={wheelCarrier.gameObject.name}");
+            return;
+        }
+
+        ModLog.Info($"[EnemyAttackSyncDiag] Native attack hook fired enemyInstance={wheelCarrier.GetInstanceID()}, object={wheelCarrier.gameObject.name}, position={wheelCarrier.transform.position}, authority={sync.IsAuthority}");
+        sync.NotifyNativeAttackStarted();
     }
 }

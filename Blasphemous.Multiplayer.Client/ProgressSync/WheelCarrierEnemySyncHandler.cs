@@ -103,7 +103,9 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         if (_wheelCarrier == null) return;
         _wheelCarrier.SetOrientation((EntityOrientation)orientation);
         _wheelCarrier.entityCurrentState = (EntityStates)state;
-        if (_wheelCarrier.AnimatorInyector == null || _wheelCarrier.IsAttacking) return;
+        // Parry and execution own their native presentation; periodic movement snapshots
+        // must not overwrite those animations or reactivate movement while special state is active.
+        if (_specialState != 0 || _wheelCarrier.AnimatorInyector == null || _wheelCarrier.IsAttacking) return;
         if (walking && state != (byte)EntityStates.Hurt) _wheelCarrier.AnimatorInyector.Walk();
         else _wheelCarrier.AnimatorInyector.Stop();
     }

@@ -115,11 +115,11 @@ public sealed class EnemySync : MonoBehaviour
     internal void ApplySnapshot(Vector3 position, byte orientation, byte state, byte specialState, bool walking, float currentHealth)
     {
         if (_isAuthority || _enemy == null || _handler == null) return;
+        _handler.ApplySnapshot(orientation, state, walking);
         _handler.ApplySpecialState(specialState);
         ApplyHealth(currentHealth);
         _targetPosition = position;
         _hasSnapshot = true;
-        _handler.ApplySnapshot(orientation, state, walking);
     }
 
     private void ApplyHealth(float currentHealth)

@@ -608,16 +608,16 @@ namespace Blasphemous.Multiplayer.Client.Network
             catch (Exception ex) { ModLog.Warn($"Ignored malformed enemy hit packet: {ex.GetType().Name}: {ex.Message}"); }
         }
 
-        public void SendEnemyPosition(string sceneName, string spawnPointId, int generation, Vector3 position, byte orientation, byte state, bool walking, float currentHealth)
+        public void SendEnemyPosition(string sceneName, string spawnPointId, int generation, long epoch, Vector3 position, byte orientation, byte state, bool walking, float currentHealth)
         {
-            if (!IsConnected || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || orientation > 1 || state > 4 ||
+            if (!IsConnected || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 || orientation > 1 || state > 4 ||
                 float.IsNaN(position.x) || float.IsInfinity(position.x) || float.IsNaN(position.y) || float.IsInfinity(position.y) ||
                 float.IsNaN(position.z) || float.IsInfinity(position.z) || currentHealth <= 0f ||
                 float.IsNaN(currentHealth) || float.IsInfinity(currentHealth)) return;
             using (MemoryStream stream = new MemoryStream())
             using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8))
             {
-                writer.Write(sceneName); writer.Write(spawnPointId); writer.Write(generation);
+                writer.Write(sceneName); writer.Write(spawnPointId); writer.Write(generation); writer.Write(epoch);
                 writer.Write(position.x); writer.Write(position.y); writer.Write(position.z);
                 writer.Write(orientation); writer.Write(state); writer.Write(walking); writer.Write(currentHealth);
                 QueueMesssage(stream.ToArray(), NetworkType.EnemyPosition);
@@ -633,23 +633,24 @@ namespace Blasphemous.Multiplayer.Client.Network
                 {
                     string sceneName = reader.ReadString(); string spawnPointId = reader.ReadString();
                     int generation = reader.ReadInt32();
+                    long epoch = reader.ReadInt64();
                     Vector3 position = new Vector3(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
                     byte orientation = reader.ReadByte(); byte state = reader.ReadByte(); bool walking = reader.ReadBoolean();
                     float currentHealth = reader.ReadSingle();
-                    if (stream.Position != stream.Length || generation < 0 || orientation > 1 || state > 4 || currentHealth <= 0f ||
+                    if (stream.Position != stream.Length || generation < 0 || epoch < 0 || orientation > 1 || state > 4 || currentHealth <= 0f ||
                         float.IsNaN(currentHealth) || float.IsInfinity(currentHealth) ||
                         float.IsNaN(position.x) || float.IsInfinity(position.x) || float.IsNaN(position.y) || float.IsInfinity(position.y) ||
                         float.IsNaN(position.z) || float.IsInfinity(position.z)) return;
-                    EnemyDeathSyncManager.ApplyRemotePosition(sceneName, spawnPointId, generation, position, orientation, state, walking, currentHealth);
+                    EnemyDeathSyncManager.ApplyRemotePosition(sceneName, spawnPointId, generation, epoch, position, orientation, state, walking, currentHealth);
                 }
             }
             catch (Exception ex) { ModLog.Warn($"Ignored malformed enemy position packet: {ex.GetType().Name}: {ex.Message}"); }
         }
 
-        public void SendEnemyAttack(string sceneName, string spawnPointId, int generation, byte orientation)
+        public void SendEnemyAttack(string sceneName, string spawnPointId, int generation, long epoch, byte orientation)
         {
             if (!IsConnected || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
-                generation < 0 || orientation > 1) return;
+                generation < 0 || epoch < 0 || orientation > 1) return;
 
             using (MemoryStream stream = new MemoryStream())
             using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8))
@@ -657,6 +658,7 @@ namespace Blasphemous.Multiplayer.Client.Network
                 writer.Write(sceneName);
                 writer.Write(spawnPointId);
                 writer.Write(generation);
+                writer.Write(epoch);
                 writer.Write(orientation);
                 QueueMesssage(stream.ToArray(), NetworkType.EnemyAttack);
             }
@@ -676,16 +678,17 @@ namespace Blasphemous.Multiplayer.Client.Network
                     string sceneName = reader.ReadString();
                     string spawnPointId = reader.ReadString();
                     int generation = reader.ReadInt32();
+                    long epoch = reader.ReadInt64();
                     byte orientation = reader.ReadByte();
-                    if (stream.Position != stream.Length || generation < 0 || orientation > 1 || string.IsNullOrEmpty(sceneName) ||
+                    if (stream.Position != stream.Length || generation < 0 || epoch < 0 || orientation > 1 || string.IsNullOrEmpty(sceneName) ||
                         string.IsNullOrEmpty(spawnPointId))
                     {
                         SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Network packet rejected as malformed after sender parse source={sourcePlayerName}, payloadLength={data.Length}");
                         return;
                     }
 
-                    SharedDiagnosticLogger.Info($"[EnemyAttackSyncDiag] Network packet received source={sourcePlayerName}, scene={sceneName}, spawn={spawnPointId}, generation={generation}, orientation={orientation}, localPlayer={Main.Multiplayer?.PlayerName}");
-                    EnemyDeathSyncManager.ApplyRemoteAttack(sceneName, spawnPointId, generation, orientation, sourcePlayerName);
+                    SharedDiagnosticLogger.Info($"[EnemyAttackSyncDiag] Network packet received source={sourcePlayerName}, scene={sceneName}, spawn={spawnPointId}, generation={generation}, epoch={epoch}, orientation={orientation}, localPlayer={Main.Multiplayer?.PlayerName}");
+                    EnemyDeathSyncManager.ApplyRemoteAttack(sceneName, spawnPointId, generation, epoch, orientation, sourcePlayerName);
                 }
             }
             catch (Exception ex)

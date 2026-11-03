@@ -976,15 +976,20 @@ public class Server
             using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
             {
                 sceneName = reader.ReadString(); string spawnPointId = reader.ReadString();
-                int generation = reader.ReadInt32(); float x = reader.ReadSingle(); float y = reader.ReadSingle(); float z = reader.ReadSingle();
+                int generation = reader.ReadInt32(); long epoch = reader.ReadInt64();
+                float x = reader.ReadSingle(); float y = reader.ReadSingle(); float z = reader.ReadSingle();
                 byte orientation = reader.ReadByte(); byte state = reader.ReadByte(); bool walking = reader.ReadBoolean();
                 float currentHealth = reader.ReadSingle();
-                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 ||
+                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 ||
                     orientation > 1 || state > 4 || currentHealth <= 0f || float.IsNaN(currentHealth) || float.IsInfinity(currentHealth) ||
                     float.IsNaN(x) || float.IsInfinity(x) || float.IsNaN(y) || float.IsInfinity(y) || float.IsNaN(z) || float.IsInfinity(z)) return;
             }
             PlayerInfo current = getCurrentPlayer(playerIp);
-            if (current == null || current.sceneName != sceneName) return;
+            if (current == null || current.sceneName != sceneName || !_sceneAuthority.IsHost(playerIp, sceneName, epoch))
+            {
+                Logger.Warn($"Rejected enemy position from non-authority or stale epoch: player={current?.name}, scene={sceneName}, epoch={epoch}");
+                return;
+            }
             foreach (string ip in connectedPlayers.Keys)
                 if (playerIp != ip && current.isInSameScene(connectedPlayers[ip]) && connectedPlayers[ip].sceneName == sceneName)
                     Send(ip, data, NetworkType.EnemyPosition);
@@ -1122,13 +1127,18 @@ public class Server
                 sceneName = reader.ReadString();
                 string spawnPointId = reader.ReadString();
                 int generation = reader.ReadInt32();
+                long epoch = reader.ReadInt64();
                 byte orientation = reader.ReadByte();
                 if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) ||
-                    string.IsNullOrEmpty(spawnPointId) || generation < 0 || orientation > 1) return;
+                    string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 || orientation > 1) return;
             }
 
             PlayerInfo sender = getCurrentPlayer(playerIp);
-            if (sender == null || sender.sceneName != sceneName) return;
+            if (sender == null || sender.sceneName != sceneName || !_sceneAuthority.IsHost(playerIp, sceneName, epoch))
+            {
+                Logger.Warn($"Rejected enemy attack from non-authority or stale epoch: player={sender?.name}, scene={sceneName}, epoch={epoch}");
+                return;
+            }
 
             foreach (KeyValuePair<string, PlayerInfo> pair in connectedPlayers)
             {

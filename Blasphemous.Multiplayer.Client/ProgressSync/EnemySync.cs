@@ -15,7 +15,6 @@ public sealed class EnemySync : MonoBehaviour
 {
     private const float SnapshotInterval = 0.08f;
     private const float IdentityRefreshInterval = 0.5f;
-    private const float PeerStateGrace = 1.5f;
     private const float PeerSnapshotTimeout = 1f;
 
     private EnemySyncHandler _handler;
@@ -29,9 +28,7 @@ public sealed class EnemySync : MonoBehaviour
     private bool _authorityInitialized;
     internal bool IsAuthority => _isAuthority;
     private bool _hasSnapshot;
-    private bool _entryEvaluated;
-    private bool _awaitingPeerState;
-    private float _awaitDeadline;
+    private long _authorityEpoch = -1;
     private int _lastPeerSnapshotGeneration = -1;
     private float _lastPeerSnapshot = float.NegativeInfinity;
     private Vector3 _targetPosition;
@@ -65,23 +62,24 @@ public sealed class EnemySync : MonoBehaviour
         }
         if (string.IsNullOrEmpty(_sceneName) || string.IsNullOrEmpty(_spawnPointId) || _generation < 0) return;
 
-        if (!_entryEvaluated)
+        if (!SceneAuthorityState.TryGet(_sceneName, out string hostName, out long epoch) || string.IsNullOrEmpty(hostName))
         {
-            _entryEvaluated = true;
-            _awaitingPeerState = true;
-            _awaitDeadline = Time.unscaledTime + PeerStateGrace;
-            SharedDiagnosticLogger.Info($"[EnemySync] Awaiting initial peer state for {_spawnPointId}");
+            _authorityEpoch = -1;
+            SetAuthority(false);
+            LogAuthorityContextIfChanged();
+            return;
         }
 
-        SetAuthority(ResolveAuthority());
+        _authorityEpoch = epoch;
+        SetAuthority(string.Equals(Main.Multiplayer.PlayerName, hostName, StringComparison.Ordinal));
         LogAuthorityContextIfChanged();
-        if (_isAuthority && !_awaitingPeerState)
+        if (_isAuthority)
         {
             UpdateTarget();
             if (Time.unscaledTime >= _nextSnapshot)
             {
                 _nextSnapshot = Time.unscaledTime + SnapshotInterval;
-                Main.Multiplayer.NetworkManager.SendEnemyPosition(_sceneName, _spawnPointId, _generation, _enemy.transform.position,
+                Main.Multiplayer.NetworkManager.SendEnemyPosition(_sceneName, _spawnPointId, _generation, _authorityEpoch, _enemy.transform.position,
                     (byte)_enemy.Status.Orientation, (byte)_enemy.entityCurrentState, _handler.IsWalking, _enemy.Stats.Life.Current);
             }
         }
@@ -116,7 +114,7 @@ public sealed class EnemySync : MonoBehaviour
 
     internal void ApplySnapshot(Vector3 position, byte orientation, byte state, bool walking, float currentHealth)
     {
-        if ((_isAuthority && !_awaitingPeerState) || _enemy == null || _handler == null) return;
+        if (_isAuthority || _enemy == null || _handler == null) return;
         ApplyHealth(currentHealth);
         _targetPosition = position;
         _hasSnapshot = true;
@@ -142,43 +140,13 @@ public sealed class EnemySync : MonoBehaviour
         }
     }
 
-    private bool HasPeerInScene()
-    {
-        string localName = Main.Multiplayer.PlayerName;
-        foreach (PlayerStatus player in Main.Multiplayer.OtherPlayerManager.AllConnectedPlayers)
-        {
-            if (player == null || player.CurrentScene != _sceneName || string.IsNullOrEmpty(player.Name) || player.Name == localName) continue;
-            return true;
-        }
-        return false;
-    }
-
-    private bool ResolveAuthority()
-    {
-        bool peerPublishing = _lastPeerSnapshotGeneration == _generation && Time.unscaledTime - _lastPeerSnapshot < PeerSnapshotTimeout;
-        bool nameWins = IsLocalAuthority();
-        if (_awaitingPeerState)
-        {
-            if (peerPublishing) { _awaitingPeerState = false; return false; }
-            if (Time.unscaledTime < _awaitDeadline) return true;
-            _awaitingPeerState = false;
-            return !HasPeerInScene() || nameWins;
-        }
-        if (!HasPeerInScene()) return true;
-        if (_isAuthority) return !(peerPublishing && !nameWins);
-        return nameWins && !peerPublishing;
-    }
-
+ 
     private string GetPreferredAuthorityName()
     {
         if (Main.Multiplayer == null || string.IsNullOrEmpty(Main.Multiplayer.PlayerName)) return "<unknown>";
-        string ownerName = Main.Multiplayer.PlayerName;
-        foreach (PlayerStatus player in Main.Multiplayer.OtherPlayerManager.AllConnectedPlayers)
-        {
-            if (player == null || player.CurrentScene != _sceneName || string.IsNullOrEmpty(player.Name)) continue;
-            if (string.CompareOrdinal(player.Name, ownerName) < 0) ownerName = player.Name;
-        }
-        return ownerName;
+        if (SceneAuthorityState.TryGet(_sceneName, out string hostName, out _) && !string.IsNullOrEmpty(hostName))
+            return hostName;
+        return "<unassigned>";
     }
 
     private string DescribePeers()
@@ -201,18 +169,14 @@ public sealed class EnemySync : MonoBehaviour
         string localName = Main.Multiplayer == null ? "<offline>" : Main.Multiplayer.PlayerName;
         string preferredName = Main.Multiplayer == null ? "<offline>" : GetPreferredAuthorityName();
         bool peerPublishing = _lastPeerSnapshotGeneration == _generation && Time.unscaledTime - _lastPeerSnapshot < PeerSnapshotTimeout;
-        string state = $"local={localName}|preferred={preferredName}|authority={_isAuthority}|peerPublishing={peerPublishing}|awaiting={_awaitingPeerState}|peers={DescribePeers()}";
+        string state = $"local={localName}|preferred={preferredName}|authority={_isAuthority}|epoch={_authorityEpoch}|peerPublishing={peerPublishing}|peers={DescribePeers()}";
         if (state == _lastAuthorityDiagnosticState) return;
 
         _lastAuthorityDiagnosticState = state;
         SharedDiagnosticLogger.Info($"[EnemySyncDiag] Authority context changed scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, enemyInstance={_enemy?.GetInstanceID()}, {state}");
     }
 
-    private bool IsLocalAuthority()
-    {
-        return Main.Multiplayer != null && GetPreferredAuthorityName() == Main.Multiplayer.PlayerName;
-    }
-
+ 
     private void SetAuthority(bool authority)
     {
         if (_authorityInitialized && _isAuthority == authority) return;
@@ -225,7 +189,7 @@ public sealed class EnemySync : MonoBehaviour
         string localName = Main.Multiplayer == null ? "<offline>" : Main.Multiplayer.PlayerName;
         string preferredName = Main.Multiplayer == null ? "<offline>" : GetPreferredAuthorityName();
         bool peerPublishing = _lastPeerSnapshotGeneration == _generation && Time.unscaledTime - _lastPeerSnapshot < PeerSnapshotTimeout;
-        SharedDiagnosticLogger.Info($"[EnemySyncDiag] Authority transition scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, enemyInstance={_enemy?.GetInstanceID()}, localPlayer={localName}, preferredPlayer={preferredName}, result={(authority ? "LOCAL" : "FOLLOWER")}, peerPublishing={peerPublishing}, peerSnapshotAge={(peerPublishing ? (Time.unscaledTime - _lastPeerSnapshot).ToString("0.000") : "stale")}, awaitingPeerState={_awaitingPeerState}, peers={DescribePeers()}");
+        SharedDiagnosticLogger.Info($"[EnemySyncDiag] Authority transition scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, enemyInstance={_enemy?.GetInstanceID()}, localPlayer={localName}, preferredPlayer={preferredName}, epoch={_authorityEpoch}, result={(authority ? "LOCAL" : "FOLLOWER")}, peerPublishing={peerPublishing}, peerSnapshotAge={(peerPublishing ? (Time.unscaledTime - _lastPeerSnapshot).ToString("0.000") : "stale")}, peers={DescribePeers()}");
     }
 
     private void UpdateTarget()
@@ -273,24 +237,23 @@ public sealed class EnemySync : MonoBehaviour
 
         byte orientation = (byte)_enemy.Status.Orientation;
         SharedDiagnosticLogger.Info($"[EnemyAttackSync] Sending WheelCarrier attack scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, orientation={orientation}");
-        Main.Multiplayer.NetworkManager.SendEnemyAttack(_sceneName, _spawnPointId, _generation, orientation);
+        if (_authorityEpoch < 0)
+        {
+            SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Attack not sent: scene authority assignment unavailable scene={_sceneName}, spawn={_spawnPointId}");
+            return;
+        }
+        Main.Multiplayer.NetworkManager.SendEnemyAttack(_sceneName, _spawnPointId, _generation, _authorityEpoch, orientation);
     }
 
-    internal bool IsExpectedAuthority(string playerName)
+    internal bool IsExpectedAuthority(string playerName, long packetEpoch)
     {
-        if (string.IsNullOrEmpty(playerName) || string.IsNullOrEmpty(_sceneName) || Main.Multiplayer == null)
+        if (string.IsNullOrEmpty(playerName) || string.IsNullOrEmpty(_sceneName) || Main.Multiplayer == null ||
+            !SceneAuthorityState.TryGet(_sceneName, out string expectedHost, out long currentEpoch))
             return false;
 
-        string expected = Main.Multiplayer.PlayerName;
-        foreach (PlayerStatus player in Main.Multiplayer.OtherPlayerManager.AllConnectedPlayers)
-        {
-            if (player == null || player.CurrentScene != _sceneName || string.IsNullOrEmpty(player.Name)) continue;
-            if (string.IsNullOrEmpty(expected) || string.CompareOrdinal(player.Name, expected) < 0)
-                expected = player.Name;
-        }
-        bool accepted = expected == playerName;
+        bool accepted = packetEpoch == currentEpoch && string.Equals(expectedHost, playerName, StringComparison.Ordinal);
         if (!accepted)
-            SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Authority sender mismatch scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, sender={playerName}, expected={expected}, localPlayer={Main.Multiplayer.PlayerName}, peers={DescribePeers()}, localIsAuthority={_isAuthority}");
+            SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Authority sender mismatch scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, sender={playerName}, expected={expectedHost}, packetEpoch={packetEpoch}, currentEpoch={currentEpoch}, localPlayer={Main.Multiplayer.PlayerName}, peers={DescribePeers()}, localIsAuthority={_isAuthority}");
         return accepted;
     }
 

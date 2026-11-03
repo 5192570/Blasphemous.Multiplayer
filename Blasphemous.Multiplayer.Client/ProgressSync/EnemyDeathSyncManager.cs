@@ -106,14 +106,21 @@ public static class EnemyDeathSyncManager
         return EnemySyncManager.Supports(enemy) && !enemy.Status.Dead;
     }
 
-    public static void ApplyRemoteAttack(string sceneName, string spawnPointId, int generation, byte orientation, string sourcePlayerName)
+    public static void ApplyRemoteAttack(string sceneName, string spawnPointId, int generation, long epoch, byte orientation, string sourcePlayerName)
     {
         SharedDiagnosticLogger.Info($"[EnemyAttackSyncDiag] Received attack scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, orientation={orientation}, localScene={Core.LevelManager.currentLevel?.LevelName}");
 
-        if (string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 ||
+        if (string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 ||
             orientation > 1 || string.IsNullOrEmpty(sourcePlayerName))
         {
             SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Rejected attack: invalid payload scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, orientation={orientation}");
+            return;
+        }
+
+        if (!SceneAuthorityState.TryGet(sceneName, out string assignedHost, out long currentEpoch) ||
+            epoch != currentEpoch || string.IsNullOrEmpty(assignedHost))
+        {
+            SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Rejected attack: stale or missing scene authority scene={sceneName}, packetEpoch={epoch}, currentEpoch={currentEpoch}, assignedHost={assignedHost}");
             return;
         }
 
@@ -165,7 +172,7 @@ public static class EnemyDeathSyncManager
             SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Rejected attack: receiver considers itself authoritative scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, enemyInstance={enemy.GetInstanceID()}");
             return;
         }
-        if (!sync.IsExpectedAuthority(sourcePlayerName))
+        if (!sync.IsExpectedAuthority(sourcePlayerName, epoch))
         {
             SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Rejected attack: sender failed authority validation scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, enemyInstance={enemy.GetInstanceID()}");
             return;
@@ -194,10 +201,12 @@ public static class EnemyDeathSyncManager
         handler.ApplyRemoteHit(orientation);
     }
 
-    public static void ApplyRemotePosition(string sceneName, string spawnPointId, int generation, Vector3 position, byte orientation, byte state, bool walking, float currentHealth)
+    public static void ApplyRemotePosition(string sceneName, string spawnPointId, int generation, long epoch, Vector3 position, byte orientation, byte state, bool walking, float currentHealth)
     {
         if (orientation > 1 || state > 4 || currentHealth <= 0f || float.IsNaN(currentHealth) || float.IsInfinity(currentHealth) ||
-            string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 ||
+            string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 ||
+            !SceneAuthorityState.TryGet(sceneName, out string assignedHost, out long currentEpoch) ||
+            string.IsNullOrEmpty(assignedHost) || epoch != currentEpoch ||
             Core.LevelManager.currentLevel == null || Core.LevelManager.currentLevel.LevelName != sceneName ||
             GetGeneration(MakeGenerationKey(sceneName, spawnPointId)) != generation) return;
 

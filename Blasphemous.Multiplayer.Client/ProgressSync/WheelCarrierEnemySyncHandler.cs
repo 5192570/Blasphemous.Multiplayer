@@ -4,6 +4,8 @@ using Gameplay.GameControllers.Enemies.WheelCarrier;
 using Gameplay.GameControllers.Entities;
 using UnityEngine;
 
+namespace Blasphemous.Multiplayer.Client.ProgressSync;
+
 /// <summary>Gameplay adapter for Zealot (the WheelCarrier enemy class).</summary>
 public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
 {

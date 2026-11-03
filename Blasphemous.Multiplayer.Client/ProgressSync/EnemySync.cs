@@ -1,4 +1,5 @@
 using System;
+using Blasphemous.Multiplayer.Client.Network;
 using System.Collections.Generic;
 using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Client.Players;
@@ -69,7 +70,7 @@ public sealed class EnemySync : MonoBehaviour
             _entryEvaluated = true;
             _awaitingPeerState = true;
             _awaitDeadline = Time.unscaledTime + PeerStateGrace;
-            ModLog.Info($"[EnemySync] Awaiting initial peer state for {_spawnPointId}");
+            SharedDiagnosticLogger.Info($"[EnemySync] Awaiting initial peer state for {_spawnPointId}");
         }
 
         SetAuthority(ResolveAuthority());
@@ -98,7 +99,7 @@ public sealed class EnemySync : MonoBehaviour
     {
         if (generation != _generation)
         {
-            ModLog.Warn($"[EnemySyncDiag] Ignored peer snapshot for different generation scene={_sceneName}, spawn={_spawnPointId}, localGeneration={_generation}, packetGeneration={generation}");
+            SharedDiagnosticLogger.Warn($"[EnemySyncDiag] Ignored peer snapshot for different generation scene={_sceneName}, spawn={_spawnPointId}, localGeneration={_generation}, packetGeneration={generation}");
             return;
         }
 
@@ -109,7 +110,7 @@ public sealed class EnemySync : MonoBehaviour
         if (firstSnapshot || peerWasStale)
         {
             _loggedFirstPeerSnapshot = true;
-            ModLog.Info($"[EnemySyncDiag] {(firstSnapshot ? "First" : "Resumed")} peer snapshot scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, localPlayer={Main.Multiplayer?.PlayerName}, enemyInstance={_enemy?.GetInstanceID()}");
+            SharedDiagnosticLogger.Info($"[EnemySyncDiag] {(firstSnapshot ? "First" : "Resumed")} peer snapshot scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, localPlayer={Main.Multiplayer?.PlayerName}, enemyInstance={_enemy?.GetInstanceID()}");
         }
     }
 
@@ -204,7 +205,7 @@ public sealed class EnemySync : MonoBehaviour
         if (state == _lastAuthorityDiagnosticState) return;
 
         _lastAuthorityDiagnosticState = state;
-        ModLog.Info($"[EnemySyncDiag] Authority context changed scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, enemyInstance={_enemy?.GetInstanceID()}, {state}");
+        SharedDiagnosticLogger.Info($"[EnemySyncDiag] Authority context changed scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, enemyInstance={_enemy?.GetInstanceID()}, {state}");
     }
 
     private bool IsLocalAuthority()
@@ -224,7 +225,7 @@ public sealed class EnemySync : MonoBehaviour
         string localName = Main.Multiplayer == null ? "<offline>" : Main.Multiplayer.PlayerName;
         string preferredName = Main.Multiplayer == null ? "<offline>" : GetPreferredAuthorityName();
         bool peerPublishing = _lastPeerSnapshotGeneration == _generation && Time.unscaledTime - _lastPeerSnapshot < PeerSnapshotTimeout;
-        ModLog.Info($"[EnemySyncDiag] Authority transition scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, enemyInstance={_enemy?.GetInstanceID()}, localPlayer={localName}, preferredPlayer={preferredName}, result={(authority ? "LOCAL" : "FOLLOWER")}, peerPublishing={peerPublishing}, peerSnapshotAge={(peerPublishing ? (Time.unscaledTime - _lastPeerSnapshot).ToString("0.000") : "stale")}, awaitingPeerState={_awaitingPeerState}, peers={DescribePeers()}");
+        SharedDiagnosticLogger.Info($"[EnemySyncDiag] Authority transition scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, enemyInstance={_enemy?.GetInstanceID()}, localPlayer={localName}, preferredPlayer={preferredName}, result={(authority ? "LOCAL" : "FOLLOWER")}, peerPublishing={peerPublishing}, peerSnapshotAge={(peerPublishing ? (Time.unscaledTime - _lastPeerSnapshot).ToString("0.000") : "stale")}, awaitingPeerState={_awaitingPeerState}, peers={DescribePeers()}");
     }
 
     private void UpdateTarget()
@@ -266,12 +267,12 @@ public sealed class EnemySync : MonoBehaviour
             return;
         if (!_isAuthority)
         {
-            ModLog.Warn($"[EnemyAttackSyncDiag] Native WheelCarrier attack observed but NOT SENT: local player is follower scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, enemyInstance={_enemy.GetInstanceID()}, localPlayer={Main.Multiplayer.PlayerName}, preferredPlayer={GetPreferredAuthorityName()}, peers={DescribePeers()}");
+            SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Native WheelCarrier attack observed but NOT SENT: local player is follower scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, enemyInstance={_enemy.GetInstanceID()}, localPlayer={Main.Multiplayer.PlayerName}, preferredPlayer={GetPreferredAuthorityName()}, peers={DescribePeers()}");
             return;
         }
 
         byte orientation = (byte)_enemy.Status.Orientation;
-        ModLog.Info($"[EnemyAttackSync] Sending WheelCarrier attack scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, orientation={orientation}");
+        SharedDiagnosticLogger.Info($"[EnemyAttackSync] Sending WheelCarrier attack scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, orientation={orientation}");
         Main.Multiplayer.NetworkManager.SendEnemyAttack(_sceneName, _spawnPointId, _generation, orientation);
     }
 
@@ -289,7 +290,7 @@ public sealed class EnemySync : MonoBehaviour
         }
         bool accepted = expected == playerName;
         if (!accepted)
-            ModLog.Warn($"[EnemyAttackSyncDiag] Authority sender mismatch scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, sender={playerName}, expected={expected}, localPlayer={Main.Multiplayer.PlayerName}, peers={DescribePeers()}, localIsAuthority={_isAuthority}");
+            SharedDiagnosticLogger.Warn($"[EnemyAttackSyncDiag] Authority sender mismatch scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, sender={playerName}, expected={expected}, localPlayer={Main.Multiplayer.PlayerName}, peers={DescribePeers()}, localIsAuthority={_isAuthority}");
         return accepted;
     }
 

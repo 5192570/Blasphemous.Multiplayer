@@ -105,6 +105,27 @@ public static class EnemyDeathSyncManager
         return EnemySyncManager.Supports(enemy) && !enemy.Status.Dead;
     }
 
+    public static void ApplyRemoteAttack(string sceneName, string spawnPointId, int generation, string sourcePlayerName, string targetPlayerName)
+    {
+        if (string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 ||
+            string.IsNullOrEmpty(sourcePlayerName) || string.IsNullOrEmpty(targetPlayerName) ||
+            Main.Multiplayer == null || Main.Multiplayer.PlayerName != targetPlayerName ||
+            Core.LevelManager.currentLevel == null || Core.LevelManager.currentLevel.LevelName != sceneName ||
+            !TryGetSpawnedEnemy(sceneName, spawnPointId, generation, out Enemy enemy)) return;
+
+        EnemySync sync = enemy.GetComponent<EnemySync>();
+        if (sync == null)
+        {
+            EnemySyncManager.Attach(enemy);
+            sync = enemy.GetComponent<EnemySync>();
+        }
+        if (sync == null || sync.IsAuthority || !sync.IsExpectedAuthority(sourcePlayerName) ||
+            !EnemySyncManager.TryGetHandler(enemy, out EnemySyncHandler handler)) return;
+
+        if (handler is WheelCarrierEnemySyncHandler wheelCarrierHandler)
+            wheelCarrierHandler.ApplyRemoteAttack();
+    }
+
     public static void ApplyRemoteHit(string sceneName, string spawnPointId, int generation, byte orientation)
     {
         if (orientation > 1 || !TryGetSpawnedEnemy(sceneName, spawnPointId, generation, out Enemy enemy) ||

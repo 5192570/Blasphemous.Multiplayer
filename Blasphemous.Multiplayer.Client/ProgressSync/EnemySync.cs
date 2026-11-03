@@ -76,6 +76,8 @@ public sealed class EnemySync : MonoBehaviour
         _authorityEpoch = epoch;
         SetAuthority(string.Equals(Main.Multiplayer.PlayerName, hostName, StringComparison.Ordinal));
         if (epochChanged && !_isAuthority) ResetFollowerSnapshotBaseline("authority epoch changed");
+        // A new authority namespace invalidates presentation copied from the previous one.
+        if (epochChanged) _handler.OnAuthorityContextChanged("authority epoch changed");
         LogAuthorityContextIfChanged();
         if (_isAuthority)
         {
@@ -132,7 +134,7 @@ public sealed class EnemySync : MonoBehaviour
         if (_handler is WheelCarrierEnemySyncHandler wheelCarrierHandler)
             SharedDiagnosticLogger.Info($"[WheelCarrierSnapshotDiag] Receive/apply scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, epoch={_authorityEpoch}, revision={_lastSnapshotRevision}, incomingSpecialState={specialState}, localSpecialStateBefore={wheelCarrierHandler.SpecialState}, time={Time.realtimeSinceStartup:0.000}");
         _handler.ApplySnapshot(orientation, state, walking);
-        _handler.ApplySpecialState(specialState);
+        _handler.ApplySpecialState(specialState, GetPreferredAuthorityName());
         if (_handler is WheelCarrierEnemySyncHandler appliedWheelCarrierHandler)
             SharedDiagnosticLogger.Info($"[WheelCarrierSnapshotDiag] Applied scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, epoch={_authorityEpoch}, revision={_lastSnapshotRevision}, incomingSpecialState={specialState}, localSpecialStateAfter={appliedWheelCarrierHandler.SpecialState}, time={Time.realtimeSinceStartup:0.000}");
         ApplyHealth(currentHealth);

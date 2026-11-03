@@ -79,14 +79,21 @@ public static class EnemyDeathSyncManager
     /// which never opens a damage context, so the client whose Penitent performed the
     /// riposte destroys its copy silently while the authority keeps a one-hit-point
     /// leftover that still publishes snapshots (frozen AI, unhittable enemy).
+    ///
+    /// The hook is deliberately narrow: <see cref="EnemySyncHandler.OwnsUnattributedDeath"/>
+    /// is only true for a WheelCarrier that is being executed, so no other enemy type
+    /// and no other death cause changes behaviour.
     /// </summary>
     internal static void ReportUnattributedLocalDeath(Entity entity)
     {
-        if (!(entity is Enemy enemy) || enemy.gameObject == null || !enemy.gameObject.activeInHierarchy)
+        // Runs from the KillInstanteneously postfix, i.e. inside the dying entity's own
+        // method: Status.Dead was assigned on its first line and nothing can have
+        // destroyed the object yet, so no liveness re-check is needed here.
+        if (!(entity is Enemy enemy) || !enemy.Status.Dead)
             return;
-        if (applyingRemoteDeath || applyingRemoteDamage || !enemy.Status.Dead)
+        if (applyingRemoteDeath || applyingRemoteDamage)
             return;
-        if (!EnemySyncManager.Supports(enemy))
+        if (!EnemySyncManager.TryGetHandler(enemy, out EnemySyncHandler handler) || !handler.OwnsUnattributedDeath)
             return;
         // A death produced by a local hit is already reported by CompleteLocalHit.
         if (activeLocalHitContext != null && activeLocalHitContext.Enemy == enemy)
@@ -107,9 +114,12 @@ public static class EnemyDeathSyncManager
             return;
         }
 
+        // Deterministic id per enemy incarnation: the authority's existing hit-id dedupe
+        // then collapses repeated kills of the same corpse (Execution.Damage can call
+        // KillEntity a second time) into a single report.
+        string hitId = "unattributed-death:" + sceneName + ":" + spawnPointId + ":" + generation.ToString(CultureInfo.InvariantCulture);
         // Report enough damage to reach zero so the authority commits the same death.
         float lethalDamage = Mathf.Max(enemy.Stats.Life.Final, 1f) + enemy.Stats.Defense.Final;
-        string hitId = "kill-" + Guid.NewGuid().ToString("N");
         SharedDiagnosticLogger.Info($"[EnemyDamageSync] Reporting unattributed lethal hit scene={sceneName}, spawn={spawnPointId}, generation={generation}, type={enemy.GetType().Name}, damage={lethalDamage:0.###}, hit={hitId}");
         Main.Multiplayer.NetworkManager.SendEnemyDamageReport(sceneName, spawnPointId, generation, epoch,
             GetRevision(sceneName, spawnPointId, generation, epoch), hitId, lethalDamage, string.Empty, 0, (byte)enemy.Status.Orientation);
@@ -521,14 +531,17 @@ public static class EnemyDeathSyncManager
         byte currentState = handler.SpecialState;
         if (currentState == state)
         {
+            // Repeated reports are the host's liveness signal for the mirrored state;
+            // they must not be dropped or the mirror looks unconfirmed forever.
+            handler.ApplyRemoteSpecialState(state, orientation, sourcePlayerName, false);
             SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Host report redundant scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, requestedState={state}, hostState={currentState}, epoch={epoch}, observedRevision={observedRevision}, hostRevision={GetRevision(sceneName, spawnPointId, generation, epoch)}, time={Time.realtimeSinceStartup:0.000}");
             return;
         }
 
         SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Host applying report scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, beforeState={currentState}, requestedState={state}, epoch={epoch}, observedRevision={observedRevision}, hostRevision={GetRevision(sceneName, spawnPointId, generation, epoch)}, time={Time.realtimeSinceStartup:0.000}");
-        handler.ApplyRemoteSpecialState(state, orientation);
+        handler.ApplyRemoteSpecialState(state, orientation, sourcePlayerName, false);
         long revision = AdvanceRevision(sceneName, spawnPointId, generation, epoch, "WheelCarrier special-state transition");
-        SharedDiagnosticLogger.Info($"[WheelCarrierStateSync] Host applied follower state scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, state={state}, epoch={epoch}, revision={revision}");
+        SharedDiagnosticLogger.Info($"[WheelCarrierStateSync] Host mirrors follower state (presentation only) scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, state={state}, epoch={epoch}, revision={revision}");
     }
 
     public static void ApplyRemotePosition(string sceneName, string spawnPointId, int generation, long epoch, long revision, Vector3 position, byte orientation, byte state, byte specialState, bool walking, float currentHealth)

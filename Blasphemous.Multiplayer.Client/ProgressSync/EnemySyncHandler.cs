@@ -20,13 +20,24 @@ public abstract class EnemySyncHandler : MonoBehaviour
 
     protected virtual void OnAttach() { }
 
-    // Runs every frame from the shared sync component, before any authority decision,
-    // so handlers can expire local presentation state that has no native completion path.
+    // Runs every frame from the shared sync component, before any authority decision.
+    // Handlers use it to validate presentation state against the session, never to
+    // invent gameplay state.
     internal virtual void OnSyncUpdate() { }
+
+    // Called when the scene authority changes (handoff, epoch bump, reconnection).
+    // Presentation that was copied from the previous authority must not survive it.
+    internal virtual void OnAuthorityContextChanged(string reason) { }
 
     internal abstract bool IsWalking { get; }
     internal virtual byte SpecialState => 0;
-    internal virtual void ApplySpecialState(byte state) { }
+
+    // True when a death raised outside a captured hit belongs to this handler's
+    // gameplay flow (the WheelCarrier riposte finisher). Everything else keeps the
+    // existing hit-report path untouched.
+    internal virtual bool OwnsUnattributedDeath => false;
+
+    internal virtual void ApplySpecialState(byte state, string authorityName) { }
     internal abstract bool SyncHitOnDamage { get; }
     internal abstract void SetAuthority(bool authority);
     internal abstract void SetTarget(GameObject target);

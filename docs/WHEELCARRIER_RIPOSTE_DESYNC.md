@@ -135,8 +135,10 @@ call happens on the authority the value is broadcast to everyone.
 The previous revision already logs everything needed. Reproduce once with the
 diagnostic collector and grep the collected log. (The two message names
 `Native apply begin` and `Applied remote state` only exist in the *pre-fix* build —
-this revision replaces them with `Mirroring remote state` / `Mirror expired` /
-`Suppressed native parry recovery`, which are listed at the end of this section.)
+this revision replaces them with `Mirror apply (presentation only)` /
+`Mirror still unconfirmed` / `Suppressed native parry recovery`, which are listed at
+the end of this section. A mirror log line never means the observer performed the
+native interaction — the message says so explicitly.)
 
 | Observation | Means |
 |---|---|
@@ -158,20 +160,21 @@ After applying this branch, the same reproduction should instead show, on the cl
 that is *not* performing the riposte:
 
 ```
-[WheelCarrierStateSync] Mirroring remote state   ... state=1
-[WheelCarrierStateDiag] Suppressed native parry recovery on mirrored state   (repeated)
-[WheelCarrierStateSync] Mirroring remote state   ... before=1, state=2
-[EnemyDeathSync]      Applied remote death ...            (or Reported unattributed lethal hit -> Authority committed unattributed death)
-[WheelCarrierStateDiag] Clearing special state ... reason=remote death
+[WheelCarrierStateDiag] Mirror apply (presentation only) ... before=0, state=1, owner=Host (scene authority)
+[WheelCarrierStateDiag] Suppressed native parry recovery on mirrored state          (repeated while parried)
+[WheelCarrierStateDiag] Mirror apply (presentation only) ... before=1, state=2, owner=Host (scene authority)
+[EnemyDeathSync]        Applied remote death ...     (or: Reporting unattributed lethal hit -> Authority committed unattributed death)
+[WheelCarrierStateDiag] Clearing special state ... mirrored=True, reason=remote death
 ```
 
-and no `Mirror expired without an owner update` unless a report really was lost.
+`Mirror still unconfirmed` is diagnostic only and is expected on the host, whose mirror
+has no periodic confirmation; it never changes presentation.
 
 ## 5. What this branch changes
 
 The rule the rewrite enforces: **only the client whose Penitent performed the
 parry/riposte runs the native transition methods; every other client runs a reversible
-presentation mirror and lets the authority end it.**
+presentation mirror, and the mirror is ended only by an authoritative condition.**
 
 `ProgressSync/WheelCarrierEnemySyncHandler.cs`
 
@@ -185,26 +188,34 @@ presentation mirror and lets the authority end it.**
   while the state is mirrored, so the native 1 s timer cannot cancel a state the owner
   is still playing (D1).
 * Ownership: a native transition (`Parry`/`Execution`/`Alive` postfix) takes ownership
-  from a mirror; a mirror never takes over from a fresh local transition
-  (`LocalOwnershipGrace`), execution never regresses to parry, and every mirror expires
-  after `MirrorTimeout` (8 s) with a distinct log line, so a lost packet can no longer
-  wedge an enemy forever.
+  from a mirror; a live locally-owned state ignores authority echoes entirely, so the
+  authority can no longer cancel a riposte in progress; a local transition that just
+  ended keeps a 1 s `LocalOwnershipGrace`; execution never regresses to parry.
+* **No mirror is ended by a timer.** A mirror ends on: the owner's `state = 0`, an
+  authoritative/remote death, the mirror owner leaving the session, a scene-authority
+  change, or losing the connection. Elapsed time only emits a diagnostic.
 * `ReassertMirroredSpecialState()` restores the mirror after a local hit cleared
   `GotParry` (D4), and no longer reports a bogus `state = 0`.
 * Remote attack replays are ignored while a special state is active.
 
 `ProgressSync/EnemyDeathSyncManager.cs`
 
-* `ReportUnattributedLocalDeath()` + a postfix on `Entity.KillInstanteneously`: deaths
-  that no captured hit produced (riposte finishers, environment) are now committed by
-  the authority or reported as a lethal damage report by followers (D3).
-* Authority death commits are idempotent — the existing generation check in
-  `CompleteLocalHit` prevents a double commit.
+* `ReportUnattributedLocalDeath()` + a postfix on `Entity.KillInstanteneously`: the
+  riposte finisher (`Execution.OnUse -> KillEntity`) never opens a damage context, so it
+  is now committed by the authority or reported as a lethal damage report by followers
+  (D3). The hook is gated on `EnemySyncHandler.OwnsUnattributedDeath`, which is only
+  true for a WheelCarrier that is being executed.
+* Report ids are deterministic per enemy incarnation, so the existing hit-id dedupe
+  collapses repeated kills of the same corpse.
+* Authority death commits stay idempotent via the existing generation check.
 
 `ProgressSync/EnemySyncHandler.cs` / `EnemySync.cs`
 
-* New `OnSyncUpdate()` hook, called every frame before any authority decision, used for
-  the mirror watchdog.
+* `OnSyncUpdate()` — per-frame validation hook (mirror owner presence, diagnostics).
+* `OnAuthorityContextChanged(reason)` — fired on authority epoch changes; drops
+  presentation copied from the previous authority.
+* `ApplySpecialState(state, authorityName)` — snapshots now tell the handler whose
+  state they carry.
 
 ## 6. Still worth watching after this change
 
@@ -219,3 +230,109 @@ presentation mirror and lets the authority end it.**
 * A future cleanup would be to give the special-state channel its own monotonic
   sequence per enemy (instead of reusing `EnemyPosition` revisions), which would make
   "out of order state" impossible by construction rather than by grace windows.
+
+## 7. Review follow-up (timeout and death hook)
+
+### 7.1 The timeout was removed
+
+The previous revision restored the alive presentation after 8 s of silence. That was
+wrong for the reason raised in review: **elapsed time does not prove the owner
+abandoned the execution**, and the host-side mirror is exactly the client that has no
+periodic confirmation. It also produced the churn that was described: the host would
+expire, publish `specialState = 0`, the follow-up `state = 2` snapshots would be
+ignored for the grace window and then re-applied, so the presentation could oscillate
+and the authority could briefly tell the owner to stand down.
+
+What replaced it:
+
+| Situation | Recovery |
+|---|---|
+| Owner finishes and reports `0` | report / snapshot `0` (normal path) |
+| Enemy dies | `ApplyDeath` / `ApplyAuthoritativeDamageReaction(dead)` clears the mirror |
+| Mirror owner (follower) leaves | `OnSyncUpdate` polls `AllConnectedPlayers`; drops the mirror once the owner was seen connected and disappears |
+| Scene authority handed over / epoch bumped | `EnemySync` → `OnAuthorityContextChanged` |
+| Connection lost / client becomes authority | `EnemySync` → `SetAuthority(true)` → mirror dropped |
+| Scene change | new enemy instance, new handler |
+| None of the above, and no confirmation for 10 s | **diagnostic warning only** |
+
+Reliable transport is the justification for not needing a timer: the client uses
+`SimpleTcpClient` (`NetworkManager` field `_client`, `SimpleTCP`), so state reports are
+ordered and reliable while the connection is up. A state update is therefore only
+"lost" when the session itself breaks, which is covered by the disconnect and
+authority-change paths above.
+
+Answers to the specific questions:
+
+1. *What was 8 s meant to recover from?* A hypothetically lost `state = 0` report. With
+   TCP plus an explicit death path that case no longer exists as a silent failure.
+2. *Can a legitimate execution last longer?* Yes. `Enemy.StuntTime` defaults to 5 s and
+   `Execution.OnUse` waits for the interactable's `Consumed` flag, so the visible
+   execution can exceed 8 s depending on the prefab and the player's distance. The
+   timeout could cut a live interaction.
+3. *State-2 snapshot right after expiry?* With the old code that was a real oscillation
+   (expire → 1 s grace → re-apply). With no expiry the question disappears.
+4. *Can a timeout distinguish a lost update from a long execution?* No — not without an
+   authoritative signal, which is exactly what it lacked.
+5. *Diagnostic-only instead?* That is what it is now.
+
+### 7.2 Death hook: evidence for the lifecycle assumptions
+
+Call chain from the riposte finisher:
+
+```
+Execution.OnUse()                     Tools.Level.Interactables/Execution.cs:150
+  -> ExecutedEntity.KillEntity()      :161
+     -> Entity.KillEntity()           Gameplay.GameControllers.Entities/Entity.cs:148
+        -> Entity.Kill()              :312
+           -> Entity.Damage(CurrentLife + Defense)   :270
+              -> Stats.Life.Current <= 0
+                 -> Entity.KillInstanteneously()    :317
+```
+
+`KillInstanteneously()` body (Entity.cs:317-336) in order:
+
+1. `Status.Dead = true;`
+2. `Stats.Life.Current = 0f;`
+3. `Entity.Death`, `OnDeath`, `OnEntityDeath` events
+4. `Core.Events.LaunchEvent(...)` twice
+
+So at the postfix: `Status.Dead` is **guaranteed true** (assigned on the first line).
+
+`activeInHierarchy`: the only subscriber that matters here is
+`EnemySpawnPoint.OnDeath += OnEntityDie` (Tools.Level.Layout/EnemySpawnPoint.cs:159),
+and `OnEntityDie` (l.192-197) only unregisters events, sets `HasEnemySpawned = false`
+and calls `EnemySpawner.AddConsumedSpawner` (which stores a position in a list). It does
+not deactivate or destroy the enemy. `WheelCarrierAnimatorInyector.DisposeEnemy()` can
+deactivate the object, but it is an animator-event method and cannot run before the
+animator advances. The `Destroy` in `Execution.OnUse` happens later in the coroutine
+(`while (!Consumed)` first), and Unity defers `Destroy` to end of frame anyway.
+
+Because the check was not load-bearing and could silently break a future flow that
+deactivates on death, **the `activeInHierarchy` requirement was removed**; the method
+now relies on `Status.Dead` plus the narrowed handler gate. `TryFindSpawnPoint` matches
+on `EnemySpawnPoint.SpawnedEnemy == enemy`, which survives `OnEntityDie`, so identity
+resolution still works.
+
+### 7.3 Duplicates and remote-induced reports
+
+`ReportUnattributedLocalDeath` bails out when:
+
+| Condition | Prevents |
+|---|---|
+| `!(entity is Enemy)` | non-enemy entities |
+| `!enemy.Status.Dead` | a `KillInstanteneously` that was suppressed by the predicted-death prefix and then resumed |
+| `applyingRemoteDeath` / `applyingRemoteDamage` | deaths caused by applying a remote authoritative state (`ApplyNativeRemoteDeath`, `ApplyDamageReportToEnemy`) |
+| `!handler.OwnsUnattributedDeath` | every enemy outside a WheelCarrier execution — the Fool and ordinary WheelCarrier deaths keep the previous behaviour |
+| `activeLocalHitContext.Enemy == enemy` | deaths already reported by `CompleteLocalHit` |
+| generation mismatch | late reports for a previous incarnation |
+| not connected / no authority | offline and pre-authority states |
+
+Duplicates for the *same* death: the report id is deterministic
+(`unattributed-death:<scene>:<spawn>:<generation>`), so a second `KillEntity` (for
+example `Execution.Damage` re-killing the corpse) produces the same key and is dropped
+by `processedHitIds` in `ApplyAuthoritativeDamageReport`. If two reports still raced,
+the authority's generation bump rejects the second one. The previous random GUID was
+**not** sufficient for this, which is why it was replaced.
+
+On the authority side, `CommitAuthorityDeath` bumps the generation, so a repeat call
+returns early in `CompleteLocalHit` and in a second `ReportUnattributedLocalDeath`.

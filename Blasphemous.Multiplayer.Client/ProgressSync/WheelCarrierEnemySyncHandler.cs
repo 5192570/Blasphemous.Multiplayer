@@ -1,5 +1,7 @@
+using System;
 using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Client.Network;
+using Blasphemous.Multiplayer.Client.Players;
 using Framework.FrameworkCore;
 using Framework.Managers;
 using Gameplay.GameControllers.AnimationBehaviours.Enemies.Stunt;
@@ -33,23 +35,33 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync;
 /// would never finish, leaving the enemy frozen and unhittable. Observers instead
 /// run a fully reversible presentation mirror (see ApplyMirrorPresentation) and let
 /// the player who owns the transition drive it through the authority.
+///
+/// A mirror is *never* ended on a timer. It ends only on an authoritative condition:
+/// the owner reporting the state ended, an authoritative death, the owner leaving the
+/// session, a scene-authority handoff, or losing the connection. Elapsed time only
+/// produces a diagnostic warning.
 /// </summary>
 public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
 {
-    // A mirrored state has no native completion path on this client, so it always
-    // expires. This only matters when the owner's "state ended" report is lost or the
-    // owner's copy is destroyed mid-execution (the riposte kill does exactly that).
-    private const float MirrorTimeout = 8f;
-
-    // Native transitions on the owning client win over authority echoes for a moment,
+    // A native transition on the owning client wins over authority echoes for a moment,
     // so a snapshot that crosses a local Parry -> Execution transition cannot undo it.
     private const float LocalOwnershipGrace = 1f;
+
+    // Diagnostics only: how long a mirror may go without being confirmed before we log.
+    private const float MirrorUnconfirmedWarning = 10f;
+    private const float MirrorCheckInterval = 0.5f;
 
     private WheelCarrier _wheelCarrier;
     private byte _specialState;
     private bool _applyingRemoteSpecialState;
     private bool _mirroringRemoteState;
+    private string _mirrorOwner = string.Empty;
+    private bool _mirrorOwnerIsAuthority;
     private float _specialStateChangedAt;
+    private float _lastMirrorConfirmedAt;
+    private float _nextMirrorCheck;
+    private float _nextMirrorWarning;
+    private bool _mirrorOwnerPresenceKnown;
 
     protected override void OnAttach()
     {
@@ -64,8 +76,18 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     internal override byte SpecialState => _specialState;
     internal bool IsApplyingRemoteSpecialState => _applyingRemoteSpecialState;
 
-    /// <summary>True while another player owns the parry/execution we are showing.</summary>
+    /// <summary>
+    /// True while another player owns the parry/execution we are showing. The mirror is
+    /// presentation only: it says nothing about whether *this* client's Penitent
+    /// performed the native interaction.
+    /// </summary>
     internal bool IsMirroringRemoteSpecialState => _mirroringRemoteState && _specialState != 0;
+
+    /// <summary>
+    /// A death raised while this client is showing an execution is the riposte finisher
+    /// (Execution.OnUse -> KillEntity), which never opens a damage context.
+    /// </summary>
+    internal override bool OwnsUnattributedDeath => _specialState == 2;
 
     /// <summary>
     /// The "Parry" animator state recovers to Alive() on a 1s timer. On a mirroring
@@ -74,15 +96,46 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     /// </summary>
     internal bool SuppressNativeParryRecovery => IsMirroringRemoteSpecialState && !_applyingRemoteSpecialState;
 
-    /// <summary>Called by the shared sync component every frame.</summary>
     internal override void OnSyncUpdate()
     {
-        if (!IsMirroringRemoteSpecialState || _wheelCarrier == null || _wheelCarrier.Behaviour == null) return;
-        if (Time.unscaledTime - _specialStateChangedAt < MirrorTimeout) return;
+        if (!IsMirroringRemoteSpecialState || Time.unscaledTime < _nextMirrorCheck) return;
+        _nextMirrorCheck = Time.unscaledTime + MirrorCheckInterval;
 
-        SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Mirror expired without an owner update enemyInstance={_wheelCarrier.GetInstanceID()}, stuckState={_specialState}, age={(Time.unscaledTime - _specialStateChangedAt):0.000}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+        // The only mirror that can be orphaned without a network event is a host mirror:
+        // the follower that reported the state may leave while the host still shows it.
+        // Scene-authority mirrors are recovered through OnAuthorityContextChanged.
+        if (!_mirrorOwnerIsAuthority)
+        {
+            if (IsPlayerStillConnected(_mirrorOwner))
+            {
+                // Presence is only policed after the owner was actually seen connected,
+                // so a slow connection notice cannot drop a just-created mirror.
+                _mirrorOwnerPresenceKnown = true;
+            }
+            else if (_mirrorOwnerPresenceKnown)
+            {
+                SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Mirror owner left the session; restoring presentation enemyInstance={_wheelCarrier?.GetInstanceID()}, owner={_mirrorOwner}, state={_specialState}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+                RestoreAlivePresentation();
+                ClearSpecialState("mirror owner left session");
+                return;
+            }
+        }
+
+        // Diagnostic only: never restores presentation, because elapsed time does not
+        // prove the owner abandoned the interaction.
+        if (Time.unscaledTime - _lastMirrorConfirmedAt < MirrorUnconfirmedWarning || Time.unscaledTime < _nextMirrorWarning)
+            return;
+        _nextMirrorWarning = Time.unscaledTime + MirrorUnconfirmedWarning;
+        SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Mirror still unconfirmed after {(Time.unscaledTime - _lastMirrorConfirmedAt):0.0}s enemyInstance={_wheelCarrier?.GetInstanceID()}, state={_specialState}, owner={DescribeMirrorOwner()}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+    }
+
+    /// <summary>Scene authority changed: a follower mirror can no longer be trusted.</summary>
+    internal override void OnAuthorityContextChanged(string reason)
+    {
+        if (!_mirroringRemoteState) return;
+        SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Dropping mirror after authority change enemyInstance={_wheelCarrier?.GetInstanceID()}, state={_specialState}, owner={DescribeMirrorOwner()}, reason={reason}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
         RestoreAlivePresentation();
-        ClearSpecialState("mirror timeout");
+        ClearSpecialState("authority context changed: " + reason);
     }
 
     internal void NotifyNativeSpecialState(byte state)
@@ -92,34 +145,52 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
 
         // A native transition means this client's Penitent just parried or executed the
         // enemy: ownership moves here, so drop any mirror before publishing the state.
-        bool tookOverMirror = _mirroringRemoteState;
-        if (tookOverMirror)
-            SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Local transition took ownership from mirror enemyInstance={_wheelCarrier.GetInstanceID()}, mirroredState={_specialState}, nativeState={state}, localPlayer={Main.Multiplayer?.PlayerName}");
+        if (_mirroringRemoteState)
+            SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Local transition took ownership from mirror enemyInstance={_wheelCarrier.GetInstanceID()}, mirroredState={_specialState}, mirroredOwner={DescribeMirrorOwner()}, nativeState={state}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
 
         _specialState = state;
         _mirroringRemoteState = false;
+        _mirrorOwner = string.Empty;
+        _mirrorOwnerIsAuthority = false;
+        _mirrorOwnerPresenceKnown = false;
         _specialStateChangedAt = Time.unscaledTime;
+        _lastMirrorConfirmedAt = Time.unscaledTime;
         EnemyDeathSyncManager.ReportWheelCarrierStateChange(_wheelCarrier, state);
     }
 
-    internal void ApplyRemoteSpecialState(byte state, byte orientation)
+    internal void ApplyRemoteSpecialState(byte state, byte orientation, string ownerName, bool ownerIsAuthority)
     {
         if (_wheelCarrier == null || _wheelCarrier.Behaviour == null || state > 2) return;
         _wheelCarrier.SetOrientation((EntityOrientation)orientation);
 
         if (_specialState == state)
         {
-            // The owner is still confirming this state in every snapshot: keep it alive.
-            if (_mirroringRemoteState && state != 0) _specialStateChangedAt = Time.unscaledTime;
+            // The owner is still confirming this state; refresh the watchdog only.
+            if (_mirroringRemoteState && state != 0)
+            {
+                _lastMirrorConfirmedAt = Time.unscaledTime;
+                if (!string.IsNullOrEmpty(ownerName)) _mirrorOwner = ownerName;
+            }
             return;
         }
 
-        // Execution is terminal for the owner. A late parry packet must not regress it.
-        if (_specialState == 2 && state == 1) return;
+        // This client performed the transition natively and the game is still driving it.
+        // The authority's copy of that state is an echo of what we reported, so it must
+        // never downgrade a live local parry/execution (that is what used to cancel a
+        // riposte in progress).
+        if (_specialState != 0 && !_mirroringRemoteState)
+        {
+            SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Ignored authority state on locally owned transition enemyInstance={_wheelCarrier.GetInstanceID()}, localState={_specialState}, requested={state}, owner={ownerName}, age={(Time.unscaledTime - _specialStateChangedAt):0.000}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+            return;
+        }
 
+        // Execution is terminal for the owner: a late parry update must not regress it.
+        if (_mirroringRemoteState && _specialState == 2 && state == 1) return;
+
+        // A local transition ended moments ago; a snapshot that straddles it is stale.
         if (!_mirroringRemoteState && Time.unscaledTime - _specialStateChangedAt < LocalOwnershipGrace)
         {
-            SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Ignored stale authority state enemyInstance={_wheelCarrier.GetInstanceID()}, localState={_specialState}, requested={state}, age={(Time.unscaledTime - _specialStateChangedAt):0.000}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+            SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Ignored stale authority state during local ownership grace enemyInstance={_wheelCarrier.GetInstanceID()}, localState={_specialState}, requested={state}, age={(Time.unscaledTime - _specialStateChangedAt):0.000}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
             return;
         }
 
@@ -129,9 +200,13 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         {
             _specialState = state;
             _mirroringRemoteState = state != 0;
+            _mirrorOwner = ownerName ?? string.Empty;
+            _mirrorOwnerIsAuthority = ownerIsAuthority;
+            _mirrorOwnerPresenceKnown = false;
             _specialStateChangedAt = Time.unscaledTime;
+            _lastMirrorConfirmedAt = Time.unscaledTime;
             ApplyMirrorPresentation();
-            SharedDiagnosticLogger.Info($"[WheelCarrierStateSync] Mirroring remote state enemyInstance={_wheelCarrier.GetInstanceID()}, before={before}, state={state}, orientation={orientation}, localPlayer={Main.Multiplayer?.PlayerName}");
+            SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Mirror apply (presentation only) enemyInstance={_wheelCarrier.GetInstanceID()}, before={before}, state={state}, orientation={orientation}, owner={DescribeMirrorOwner()}, ownerIsAuthority={ownerIsAuthority}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
         }
         finally
         {
@@ -144,18 +219,27 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     {
         if (!IsMirroringRemoteSpecialState || _wheelCarrier == null || _wheelCarrier.Behaviour == null) return;
         ApplyMirrorPresentation();
-        SharedDiagnosticLogger.Info($"[WheelCarrierStateSync] Re-asserted mirrored state after local damage enemyInstance={_wheelCarrier.GetInstanceID()}, state={_specialState}");
+        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Re-asserted mirror after local damage enemyInstance={_wheelCarrier.GetInstanceID()}, state={_specialState}, owner={DescribeMirrorOwner()}, time={Time.realtimeSinceStartup:0.000}");
     }
 
-    internal override void ApplySpecialState(byte state)
+    internal override void ApplySpecialState(byte state, string authorityName)
     {
         if (_wheelCarrier == null) return;
-        ApplyRemoteSpecialState(state, (byte)_wheelCarrier.Status.Orientation);
+        ApplyRemoteSpecialState(state, (byte)_wheelCarrier.Status.Orientation, authorityName, true);
     }
 
     internal override void SetAuthority(bool authority)
     {
         if (_wheelCarrier == null || _wheelCarrier.Behaviour == null) return;
+
+        // Becoming authoritative (including losing the connection) means nobody else is
+        // driving this enemy any more: a mirror cannot be maintained.
+        if (authority && _mirroringRemoteState)
+        {
+            SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Dropping mirror on authority transition enemyInstance={_wheelCarrier.GetInstanceID()}, state={_specialState}, owner={DescribeMirrorOwner()}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+            RestoreAlivePresentation();
+            ClearSpecialState("became authority");
+        }
 
         _wheelCarrier.Behaviour.EnableBehaviourOnLoad = authority;
         if (!authority)
@@ -320,10 +404,32 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     {
         if (_specialState == 0 && !_mirroringRemoteState) return;
 
-        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Clearing special state enemyInstance={_wheelCarrier?.GetInstanceID()}, state={_specialState}, mirrored={_mirroringRemoteState}, reason={reason}, time={Time.realtimeSinceStartup:0.000}");
+        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Clearing special state enemyInstance={_wheelCarrier?.GetInstanceID()}, state={_specialState}, mirrored={_mirroringRemoteState}, owner={DescribeMirrorOwner()}, reason={reason}, time={Time.realtimeSinceStartup:0.000}");
         _specialState = 0;
         _mirroringRemoteState = false;
+        _mirrorOwner = string.Empty;
+        _mirrorOwnerIsAuthority = false;
+        _mirrorOwnerPresenceKnown = false;
         _specialStateChangedAt = Time.unscaledTime;
+        _lastMirrorConfirmedAt = Time.unscaledTime;
+    }
+
+    private string DescribeMirrorOwner()
+    {
+        if (string.IsNullOrEmpty(_mirrorOwner)) return _mirrorOwnerIsAuthority ? "<scene-authority>" : "<unknown>";
+        return _mirrorOwnerIsAuthority ? _mirrorOwner + " (scene authority)" : _mirrorOwner;
+    }
+
+    private static bool IsPlayerStillConnected(string playerName)
+    {
+        if (string.IsNullOrEmpty(playerName)) return false;
+        if (Main.Multiplayer == null || Main.Multiplayer.OtherPlayerManager == null) return false;
+        foreach (PlayerStatus player in Main.Multiplayer.OtherPlayerManager.AllConnectedPlayers)
+        {
+            if (player != null && string.Equals(player.Name, playerName, StringComparison.Ordinal))
+                return true;
+        }
+        return false;
     }
 }
 

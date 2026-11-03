@@ -184,7 +184,11 @@ public static class EnemyDeathSyncManager
             reports = new List<PendingDamageReport>();
             pendingDamageReports.Add(key, reports);
         }
-        if (reports.Count >= 64) return;
+        if (reports.Count >= 512)
+        {
+            SharedDiagnosticLogger.Warn($"[EnemyDamageSync] Pending host damage queue full; dropped hit sceneKey={key}, generation={generation}, source={sourcePlayerName}, hit={hitId}");
+            return;
+        }
         reports.Add(new PendingDamageReport(sourcePlayerName, hitId, generation, resolvedDamage, impactAudioId, damageType, epoch, orientation));
         SharedDiagnosticLogger.Info($"[EnemyDamageSync] Queued hit until host enemy spawn sceneKey={key}, generation={generation}, source={sourcePlayerName}, hit={hitId}");
     }

@@ -895,13 +895,12 @@ public class Server
         catch (Exception ex) { Logger.Warn($"Ignored malformed enemy position packet: {ex.GetType().Name}: {ex.Message}"); }
     }
 
-    // Targeted WheelCarrier attack event. Only the intended player should run the local hitbox.
+    // Relay authoritative WheelCarrier attacks to every peer in the same scene.
     private void receivePlayerEnemyAttack(string playerIp, byte[] data)
     {
         try
         {
             string sceneName;
-            string targetName;
             using (MemoryStream stream = new MemoryStream(data))
             using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
             {
@@ -909,23 +908,21 @@ public class Server
                 string spawnPointId = reader.ReadString();
                 int generation = reader.ReadInt32();
                 byte orientation = reader.ReadByte();
-                targetName = reader.ReadString();
-                if (stream.Position != stream.Length || generation < 0 || orientation > 1 || string.IsNullOrEmpty(sceneName) ||
-                    string.IsNullOrEmpty(spawnPointId) || generation < 0 || string.IsNullOrEmpty(targetName)) return;
+                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) ||
+                    string.IsNullOrEmpty(spawnPointId) || generation < 0 || orientation > 1) return;
             }
 
             PlayerInfo sender = getCurrentPlayer(playerIp);
-            if (sender == null || sender.sceneName != sceneName || sender.name == targetName) return;
+            if (sender == null || sender.sceneName != sceneName) return;
 
             foreach (KeyValuePair<string, PlayerInfo> pair in connectedPlayers)
             {
-                PlayerInfo target = pair.Value;
-                if (target != null && target.name == targetName && target.sceneName == sceneName && pair.Key != playerIp)
+                PlayerInfo peer = pair.Value;
+                if (pair.Key != playerIp && peer != null && peer.sceneName == sceneName)
                 {
                     List<byte> packet = addPlayerNameToData(sender.name);
                     packet.AddRange(data);
                     Send(pair.Key, packet.ToArray(), NetworkType.EnemyAttack);
-                    return;
                 }
             }
         }

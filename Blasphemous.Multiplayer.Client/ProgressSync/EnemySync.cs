@@ -211,10 +211,12 @@ public sealed class EnemySync : MonoBehaviour
 
     internal void NotifyNativeAttackStarted()
     {
-        if (!_isAuthority || Main.Multiplayer == null || Main.Multiplayer.NetworkManager == null)
+        if (!_isAuthority || _enemy == null || Main.Multiplayer == null || Main.Multiplayer.NetworkManager == null)
             return;
 
-        Main.Multiplayer.NetworkManager.SendEnemyAttack(_sceneName, _spawnPointId, _generation, (byte)_enemy.Status.Orientation);
+        byte orientation = (byte)_enemy.Status.Orientation;
+        ModLog.Info($"[EnemyAttackSync] Sending WheelCarrier attack scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, orientation={orientation}");
+        Main.Multiplayer.NetworkManager.SendEnemyAttack(_sceneName, _spawnPointId, _generation, orientation);
     }
 
     internal bool IsExpectedAuthority(string playerName)

@@ -158,6 +158,7 @@ namespace Blasphemous.Multiplayer.Client.Network
                         case NetworkType.EnemyHit: ReceiveEnemyHit(messageData); break;
                         case NetworkType.EnemyPosition: ReceiveEnemyPosition(messageData); break;
                         case NetworkType.PlayerImpact: ReceivePlayerImpact(messageData); break;
+                        case NetworkType.EnemyAttack: ReceiveEnemyAttack(messageData); break;
                     }
                     startIdx += 3 + length;
                 }
@@ -568,6 +569,49 @@ namespace Blasphemous.Multiplayer.Client.Network
                 }
             }
             catch (Exception ex) { ModLog.Warn($"Ignored malformed enemy position packet: {ex.GetType().Name}: {ex.Message}"); }
+        }
+
+        public void SendEnemyAttack(string sceneName, string spawnPointId, int generation, string targetPlayerName)
+        {
+            if (!IsConnected || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
+                generation < 0 || string.IsNullOrEmpty(targetPlayerName)) return;
+
+            using (MemoryStream stream = new MemoryStream())
+            using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8))
+            {
+                writer.Write(sceneName);
+                writer.Write(spawnPointId);
+                writer.Write(generation);
+                writer.Write(targetPlayerName);
+                QueueMesssage(stream.ToArray(), NetworkType.EnemyAttack);
+            }
+        }
+
+        private void ReceiveEnemyAttack(byte[] data)
+        {
+            try
+            {
+                if (data == null || data.Length < 2) return;
+                int nameLength = data[0];
+                if (nameLength == 0 || data.Length <= nameLength + 1) return;
+                string sourcePlayerName = Encoding.UTF8.GetString(data, 1, nameLength);
+                using (MemoryStream stream = new MemoryStream(data, nameLength + 1, data.Length - nameLength - 1))
+                using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
+                {
+                    string sceneName = reader.ReadString();
+                    string spawnPointId = reader.ReadString();
+                    int generation = reader.ReadInt32();
+                    string targetPlayerName = reader.ReadString();
+                    if (stream.Position != stream.Length || generation < 0 || string.IsNullOrEmpty(sceneName) ||
+                        string.IsNullOrEmpty(spawnPointId) || string.IsNullOrEmpty(targetPlayerName)) return;
+
+                    EnemyDeathSyncManager.ApplyRemoteAttack(sceneName, spawnPointId, generation, sourcePlayerName, targetPlayerName);
+                }
+            }
+            catch (Exception ex)
+            {
+                ModLog.Warn($"Ignored malformed enemy attack packet: {ex.GetType().Name}: {ex.Message}");
+            }
         }
 
         public void SendEnemyDeath(string sceneName, string spawnPointId, int generation)

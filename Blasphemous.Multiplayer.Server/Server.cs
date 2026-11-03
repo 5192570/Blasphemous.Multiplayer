@@ -315,8 +315,18 @@ public class Server
     private void receivePlayerEnterScene(string playerIp, byte[] data)
     {
         PlayerInfo current = getCurrentPlayer(playerIp);
-        current.sceneName = Encoding.UTF8.GetString(data);
+        string nextScene = Encoding.UTF8.GetString(data);
 
+        // Treat EnterScene as a move if a previous LeaveScene was missed.
+        // This keeps the player roster and scene-host membership from diverging.
+        if (!string.IsNullOrEmpty(current.sceneName) &&
+            !string.Equals(current.sceneName, nextScene, StringComparison.Ordinal))
+        {
+            sendPlayerLeaveScene(playerIp);
+            current.sceneName = string.Empty;
+        }
+
+        current.sceneName = nextScene;
         sendPlayerEnterScene(playerIp);
         ApplySceneAuthorityUpdates(_sceneAuthority.Enter(playerIp, current.name, current.sceneName));
     }

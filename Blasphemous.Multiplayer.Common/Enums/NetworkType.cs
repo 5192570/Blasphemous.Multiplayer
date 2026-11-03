@@ -22,4 +22,8 @@ public enum NetworkType
     EnemyHit = 16,
     EnemyPosition = 17,
     PlayerImpact = 18,
+    EnemyAttack = 19,
+    DiagnosticControl = 20,
+    DiagnosticBatch = 21,
+    SceneAuthority = 22,
 }

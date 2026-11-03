@@ -1,4 +1,5 @@
 using System;
+using Blasphemous.Multiplayer.Client.Network;
 using System.Collections;
 using System.Reflection;
 using System.Text;
@@ -109,7 +110,7 @@ namespace Blasphemous.Multiplayer.Client
         internal static void Write(string message)
         {
             // UTC keeps timestamps directly comparable between the two players' logs.
-            ModLog.Info($"[EnemySpawnDiagnostics] {DateTime.UtcNow:yyyy-MM-ddTHH:mm:ss.fffZ} {message}");
+            SharedDiagnosticLogger.Info($"[EnemySpawnDiagnostics] {DateTime.UtcNow:yyyy-MM-ddTHH:mm:ss.fffZ} {message}");
         }
 
         internal static void Log(string eventName, EnemySpawnPoint spawnPoint)

@@ -4,6 +4,7 @@ using Blasphemous.Multiplayer.Server.Models;
 using SimpleTCP;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 
@@ -16,6 +17,15 @@ public class Server
 
     private SimpleTcpServer server;
     private Dictionary<string, PlayerInfo> connectedPlayers;
+    private readonly List<string> _connectionOrder = new List<string>();
+    private SceneAuthorityManager _sceneAuthority = new SceneAuthorityManager();
+    private readonly object _diagnosticLock = new object();
+    private string _diagnosticSessionId;
+    private string _diagnosticCollectorIp;
+    private Stopwatch _diagnosticSessionClock;
+    private long _diagnosticRelaySequence;
+    private readonly Queue<byte[]> _diagnosticHistory = new Queue<byte[]>();
+    private const int DiagnosticHistoryLimit = 256;
 
     public Server(int maxPlayers, string password)
     {
@@ -41,6 +51,15 @@ public class Server
 
     public bool Start(int port)
     {
+        connectedPlayers = new Dictionary<string, PlayerInfo>();
+        _connectionOrder.Clear();
+        _sceneAuthority = new SceneAuthorityManager();
+        _diagnosticSessionId = Guid.NewGuid().ToString("N");
+        _diagnosticCollectorIp = null;
+        _diagnosticRelaySequence = 0;
+        _diagnosticHistory.Clear();
+        _diagnosticSessionClock = Stopwatch.StartNew();
+
         try
         {
             server = new SimpleTcpServer();
@@ -55,7 +74,6 @@ public class Server
             return false;
         }
 
-        connectedPlayers = new Dictionary<string, PlayerInfo>();
         return true;
     }
 
@@ -79,7 +97,7 @@ public class Server
     }
 
     // Data should be formatted as length length type data
-    private void Receive(object sender, DataReceivedEventArgs e)
+    private void Receive(object sender, SimpleTCP.DataReceivedEventArgs e)
     {
         int startIdx = 0;
         while (startIdx < e.data.Length - 3)
@@ -118,6 +136,8 @@ public class Server
                 case NetworkType.EnemyHit:     receivePlayerEnemyHit(e.ip, data); break;
                 case NetworkType.EnemyPosition: receivePlayerEnemyPosition(e.ip, data); break;
                 case NetworkType.PlayerImpact: receivePlayerImpact(e.ip, data); break;
+                case NetworkType.EnemyAttack: receivePlayerEnemyAttack(e.ip, data); break;
+                case NetworkType.DiagnosticBatch: receiveDiagnosticBatch(e.ip, data); break;
                 default:
                     Logger.Error($"Data type '{type}' is not valid"); break;
             }
@@ -137,9 +157,20 @@ public class Server
         if (!connectedPlayers.ContainsKey(e.ip))
             return;
 
-        // Send that this player has disconnected & remove them
+        // Send that this player has disconnected & remove them.
         sendPlayerConnection(e.ip, false);
+        bool collectorDisconnected;
+        lock (_diagnosticLock)
+            collectorDisconnected = _diagnosticCollectorIp == e.ip;
+
+        List<SceneAuthorityManager.Update> sceneUpdates = _sceneAuthority.Leave(e.ip);
         connectedPlayers.Remove(e.ip);
+        _connectionOrder.Remove(e.ip);
+        ApplySceneAuthorityUpdates(sceneUpdates);
+
+        if (collectorDisconnected)
+            AssignDiagnosticCollector();
+
         Core.removeUnusedGameData(connectedPlayers);
     }
 
@@ -284,9 +315,20 @@ public class Server
     private void receivePlayerEnterScene(string playerIp, byte[] data)
     {
         PlayerInfo current = getCurrentPlayer(playerIp);
-        current.sceneName = Encoding.UTF8.GetString(data);
+        string nextScene = Encoding.UTF8.GetString(data);
 
+        // Treat EnterScene as a move if a previous LeaveScene was missed.
+        // This keeps the player roster and scene-host membership from diverging.
+        if (!string.IsNullOrEmpty(current.sceneName) &&
+            !string.Equals(current.sceneName, nextScene, StringComparison.Ordinal))
+        {
+            sendPlayerLeaveScene(playerIp);
+            current.sceneName = string.Empty;
+        }
+
+        current.sceneName = nextScene;
         sendPlayerEnterScene(playerIp);
+        ApplySceneAuthorityUpdates(_sceneAuthority.Enter(playerIp, current.name, current.sceneName));
     }
 
     private byte[] getScenePacket(PlayerInfo player)
@@ -321,7 +363,47 @@ public class Server
         PlayerInfo current = getCurrentPlayer(playerIp);
 
         sendPlayerLeaveScene(playerIp);
+        List<SceneAuthorityManager.Update> sceneUpdates = _sceneAuthority.Leave(playerIp);
         current.sceneName = "";
+        ApplySceneAuthorityUpdates(sceneUpdates);
+    }
+
+
+    // Server-assigned scene authority
+
+    private void SendSceneAuthoritySnapshots(string playerIp)
+    {
+        foreach (SceneAuthorityManager.Update snapshot in _sceneAuthority.GetSnapshots())
+            SendSceneAuthority(playerIp, snapshot);
+    }
+
+    private void ApplySceneAuthorityUpdates(List<SceneAuthorityManager.Update> updates)
+    {
+        if (updates == null)
+            return;
+
+        foreach (SceneAuthorityManager.Update update in updates)
+        {
+            foreach (string recipientIp in update.Recipients)
+            {
+                if (connectedPlayers.ContainsKey(recipientIp))
+                    SendSceneAuthority(recipientIp, update);
+            }
+
+            Logger.Info($"Scene authority changed: scene={update.SceneName}, host={(string.IsNullOrEmpty(update.HostName) ? "<none>" : update.HostName)}, epoch={update.Epoch}");
+        }
+    }
+
+    private void SendSceneAuthority(string playerIp, SceneAuthorityManager.Update update)
+    {
+        using (MemoryStream stream = new MemoryStream())
+        using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8))
+        {
+            writer.Write(update.SceneName);
+            writer.Write(update.HostName);
+            writer.Write(update.Epoch);
+            Send(playerIp, stream.ToArray(), NetworkType.SceneAuthority);
+        }
     }
 
     // Skin
@@ -455,6 +537,8 @@ public class Server
                 }
             }
         }
+
+        SendSceneAuthoritySnapshots(playerIp);
     }
 
     private void receivePlayerIntro(string playerIp, byte[] data)
@@ -524,8 +608,22 @@ public class Server
         Logger.Info("Player connection accepted");
         PlayerInfo newPlayer = new PlayerInfo(name, team);
         connectedPlayers.Add(playerIp, newPlayer);
+        _connectionOrder.Add(playerIp);
+        bool collectorAssigned = false;
+        lock (_diagnosticLock)
+        {
+            if (string.IsNullOrEmpty(_diagnosticCollectorIp))
+            {
+                _diagnosticCollectorIp = playerIp;
+                collectorAssigned = true;
+            }
+        }
+
         sendPlayerConnection(playerIp, true);
         sendPlayerIntro(playerIp, RefusalType.Accepted);
+        BroadcastDiagnosticCollectorAssignment();
+        if (collectorAssigned)
+            ReplayDiagnosticHistory();
     }
 
     private byte[] getIntroPacket(byte response)
@@ -874,24 +972,191 @@ public class Server
         try
         {
             string sceneName;
+            long epoch;
             using (MemoryStream stream = new MemoryStream(data))
             using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
             {
                 sceneName = reader.ReadString(); string spawnPointId = reader.ReadString();
-                int generation = reader.ReadInt32(); float x = reader.ReadSingle(); float y = reader.ReadSingle(); float z = reader.ReadSingle();
+                int generation = reader.ReadInt32(); epoch = reader.ReadInt64();
+                float x = reader.ReadSingle(); float y = reader.ReadSingle(); float z = reader.ReadSingle();
                 byte orientation = reader.ReadByte(); byte state = reader.ReadByte(); bool walking = reader.ReadBoolean();
                 float currentHealth = reader.ReadSingle();
-                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 ||
+                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 ||
                     orientation > 1 || state > 4 || currentHealth <= 0f || float.IsNaN(currentHealth) || float.IsInfinity(currentHealth) ||
                     float.IsNaN(x) || float.IsInfinity(x) || float.IsNaN(y) || float.IsInfinity(y) || float.IsNaN(z) || float.IsInfinity(z)) return;
             }
             PlayerInfo current = getCurrentPlayer(playerIp);
-            if (current == null || current.sceneName != sceneName) return;
+            if (current == null || current.sceneName != sceneName || !_sceneAuthority.IsHost(playerIp, sceneName, epoch))
+            {
+                Logger.Warn($"Rejected enemy position from non-authority or stale epoch: player={current?.name}, scene={sceneName}, epoch={epoch}");
+                return;
+            }
             foreach (string ip in connectedPlayers.Keys)
                 if (playerIp != ip && current.isInSameScene(connectedPlayers[ip]) && connectedPlayers[ip].sceneName == sceneName)
                     Send(ip, data, NetworkType.EnemyPosition);
         }
         catch (Exception ex) { Logger.Warn($"Ignored malformed enemy position packet: {ex.GetType().Name}: {ex.Message}"); }
+    }
+
+
+    // Shared diagnostics are relayed independently of scene and enemy authority.
+    // Every batch is timestamped by the server's monotonic session clock before
+    // it reaches the currently assigned collector.
+    private void BroadcastDiagnosticCollectorAssignment()
+    {
+        string collectorIp;
+        string collectorName;
+        string sessionId;
+        long serverElapsedMilliseconds;
+
+        lock (_diagnosticLock)
+        {
+            collectorIp = _diagnosticCollectorIp;
+            sessionId = _diagnosticSessionId;
+            serverElapsedMilliseconds = _diagnosticSessionClock == null ? 0 : _diagnosticSessionClock.ElapsedMilliseconds;
+        }
+
+        collectorName = !string.IsNullOrEmpty(collectorIp) && connectedPlayers.ContainsKey(collectorIp)
+            ? connectedPlayers[collectorIp].name
+            : string.Empty;
+
+        using (MemoryStream stream = new MemoryStream())
+        using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8))
+        {
+            writer.Write(sessionId ?? string.Empty);
+            writer.Write(collectorName);
+            writer.Write(serverElapsedMilliseconds);
+            byte[] packet = stream.ToArray();
+
+            foreach (string ip in connectedPlayers.Keys)
+                Send(ip, packet, NetworkType.DiagnosticControl);
+        }
+
+        Logger.Info($"Shared diagnostic collector assigned: {collectorName}");
+    }
+
+    private void AssignDiagnosticCollector()
+    {
+        string nextCollector = null;
+        foreach (string ip in _connectionOrder)
+        {
+            if (connectedPlayers.ContainsKey(ip))
+            {
+                nextCollector = ip;
+                break;
+            }
+        }
+
+        lock (_diagnosticLock)
+            _diagnosticCollectorIp = nextCollector;
+
+        BroadcastDiagnosticCollectorAssignment();
+        ReplayDiagnosticHistory();
+    }
+
+    private void ReplayDiagnosticHistory()
+    {
+        string collectorIp;
+        List<byte[]> history;
+        lock (_diagnosticLock)
+        {
+            collectorIp = _diagnosticCollectorIp;
+            history = new List<byte[]>(_diagnosticHistory);
+        }
+
+        if (string.IsNullOrEmpty(collectorIp) || !connectedPlayers.ContainsKey(collectorIp))
+            return;
+
+        foreach (byte[] packet in history)
+            Send(collectorIp, packet, NetworkType.DiagnosticBatch);
+    }
+
+    private void receiveDiagnosticBatch(string playerIp, byte[] data)
+    {
+        if (data == null || data.Length == 0 || data.Length > 8192 || !connectedPlayers.ContainsKey(playerIp))
+            return;
+
+        string collectorIp;
+        string sessionId;
+        long serverElapsedMilliseconds;
+        long relaySequence;
+
+        lock (_diagnosticLock)
+        {
+            collectorIp = _diagnosticCollectorIp;
+            sessionId = _diagnosticSessionId;
+            serverElapsedMilliseconds = _diagnosticSessionClock == null ? 0 : _diagnosticSessionClock.ElapsedMilliseconds;
+            relaySequence = ++_diagnosticRelaySequence;
+        }
+
+        if (string.IsNullOrEmpty(collectorIp) || !connectedPlayers.ContainsKey(collectorIp))
+            return;
+
+        PlayerInfo source = connectedPlayers[playerIp];
+        byte[] relayPacket;
+        using (MemoryStream stream = new MemoryStream())
+        using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8))
+        {
+            writer.Write(sessionId ?? string.Empty);
+            writer.Write(serverElapsedMilliseconds);
+            writer.Write(relaySequence);
+            writer.Write(source.name);
+            writer.Write(data.Length);
+            writer.Write(data);
+            relayPacket = stream.ToArray();
+        }
+
+        lock (_diagnosticLock)
+        {
+            _diagnosticHistory.Enqueue(relayPacket);
+            while (_diagnosticHistory.Count > DiagnosticHistoryLimit)
+                _diagnosticHistory.Dequeue();
+        }
+
+        Send(collectorIp, relayPacket, NetworkType.DiagnosticBatch);
+    }
+
+    // Relay authoritative WheelCarrier attacks to every peer in the same scene.
+    private void receivePlayerEnemyAttack(string playerIp, byte[] data)
+    {
+        try
+        {
+            string sceneName;
+            long epoch;
+            using (MemoryStream stream = new MemoryStream(data))
+            using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
+            {
+                sceneName = reader.ReadString();
+                string spawnPointId = reader.ReadString();
+                int generation = reader.ReadInt32();
+                epoch = reader.ReadInt64();
+                byte orientation = reader.ReadByte();
+                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) ||
+                    string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 || orientation > 1) return;
+            }
+
+            PlayerInfo sender = getCurrentPlayer(playerIp);
+            if (sender == null || sender.sceneName != sceneName || !_sceneAuthority.IsHost(playerIp, sceneName, epoch))
+            {
+                Logger.Warn($"Rejected enemy attack from non-authority or stale epoch: player={sender?.name}, scene={sceneName}, epoch={epoch}");
+                return;
+            }
+
+            foreach (KeyValuePair<string, PlayerInfo> pair in connectedPlayers)
+            {
+                PlayerInfo peer = pair.Value;
+                if (pair.Key != playerIp && peer != null && peer.sceneName == sceneName)
+                {
+                    List<byte> packet = addPlayerNameToData(sender.name);
+                    packet.AddRange(data);
+                    Send(pair.Key, packet.ToArray(), NetworkType.EnemyAttack);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Ignored malformed enemy attack packet: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
 }

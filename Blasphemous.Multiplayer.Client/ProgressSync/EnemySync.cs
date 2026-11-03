@@ -209,15 +209,12 @@ public sealed class EnemySync : MonoBehaviour
         _targetCommitmentUntil = Time.unscaledTime + _handler.TargetCommitmentDuration;
     }
 
-    internal void NotifyNativeAttackStarted(GameObject target)
+    internal void NotifyNativeAttackStarted()
     {
-        if (!_isAuthority || target == null || Main.Multiplayer == null || Main.Multiplayer.NetworkManager == null)
+        if (!_isAuthority || Main.Multiplayer == null || Main.Multiplayer.NetworkManager == null)
             return;
 
-        OtherPlayerScript remotePlayer = target.GetComponent<OtherPlayerScript>();
-        if (remotePlayer == null || string.IsNullOrEmpty(remotePlayer.PlayerName)) return;
-
-        Main.Multiplayer.NetworkManager.SendEnemyAttack(_sceneName, _spawnPointId, _generation, (byte)_enemy.Status.Orientation, remotePlayer.PlayerName);
+        Main.Multiplayer.NetworkManager.SendEnemyAttack(_sceneName, _spawnPointId, _generation, (byte)_enemy.Status.Orientation);
     }
 
     internal bool IsExpectedAuthority(string playerName)

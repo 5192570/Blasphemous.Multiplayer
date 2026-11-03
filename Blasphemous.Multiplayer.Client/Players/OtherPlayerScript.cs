@@ -20,7 +20,6 @@ namespace Blasphemous.Multiplayer.Client.Players
         public OtherPlayerAttackScript OtherPlayerAttack { get; private set; }
 
         public bool IsFacingRight => !CharacterRenderer.flipX;
-        public string PlayerName => playerStatus?.Name;
 
         // Adds necessary components & initializes them
         public void SetupPlayer(PlayerStatus status)

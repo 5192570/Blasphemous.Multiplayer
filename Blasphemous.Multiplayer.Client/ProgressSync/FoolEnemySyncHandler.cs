@@ -1,9 +1,8 @@
 using Framework.FrameworkCore;
+using Framework.Managers;
 using Gameplay.GameControllers.Enemies.Fool;
 using Gameplay.GameControllers.Entities;
 using UnityEngine;
-
-namespace Blasphemous.Multiplayer.Client.ProgressSync;
 
 /// <summary>Gameplay adapter for Prosylte (the Fool enemy class).</summary>
 public sealed class FoolEnemySyncHandler : EnemySyncHandler
@@ -18,12 +17,19 @@ public sealed class FoolEnemySyncHandler : EnemySyncHandler
     internal override void SetAuthority(bool authority)
     {
         if (_fool == null || _fool.Behaviour == null) return;
+
         _fool.Behaviour.EnableBehaviourOnLoad = authority;
         if (!authority)
         {
+            // FoolBehaviour.OnUpdate can restart its behaviour tree independently of
+            // EnableBehaviourOnLoad. Disable the component to keep follower AI dormant.
             _fool.Behaviour.StopBehaviour();
             _fool.Behaviour.StopMovement();
+            if (Core.Logic.Penitent != null)
+                _fool.Target = Core.Logic.Penitent.gameObject;
         }
+
+        _fool.Behaviour.enabled = authority;
     }
 
     internal override void SetTarget(GameObject target)

@@ -20,13 +20,20 @@ public static class EnemyDeathSyncManager
 {
     private static readonly Dictionary<string, int> generations = new Dictionary<string, int>();
     private static readonly Dictionary<string, PendingEnemyHealth> pendingEnemyHealth = new Dictionary<string, PendingEnemyHealth>();
+    private static readonly Dictionary<string, List<PendingDamageReport>> pendingDamageReports = new Dictionary<string, List<PendingDamageReport>>();
     private static readonly Dictionary<string, int> pendingRemoteDeaths = new Dictionary<string, int>();
     private static bool applyingRemoteDeath;
+    private static bool applyingRemoteDamage;
+    private static EnemyDamageContext activeLocalHitContext;
+    private static readonly HashSet<string> processedHitIds = new HashSet<string>();
+    private static readonly Queue<string> processedHitOrder = new Queue<string>();
+    private const int ProcessedHitLimit = 2048;
+    private static readonly System.Reflection.FieldInfo DamageAreaDeltaRecoverTime = AccessTools.Field(typeof(DamageArea), "DeltaRecoverTime");
 
     internal static bool TryCaptureLocalHit(EnemyDamageArea damageArea, Hit hit, out EnemyDamageContext context)
     {
-        context = default;
-        if (applyingRemoteDeath || Main.Multiplayer == null || Main.Multiplayer.NetworkManager == null ||
+        context = null;
+        if (applyingRemoteDeath || applyingRemoteDamage || Main.Multiplayer == null || Main.Multiplayer.NetworkManager == null ||
             !Main.Multiplayer.NetworkManager.IsConnected || Core.Logic.Penitent == null || damageArea == null)
             return false;
 
@@ -42,48 +49,226 @@ public static class EnemyDeathSyncManager
         string sceneName = Core.LevelManager.currentLevel == null ? null : Core.LevelManager.currentLevel.LevelName;
         if (string.IsNullOrEmpty(sceneName) || !TryFindSpawnPoint(sceneName, enemy, out EnemySpawnPoint spawnPoint, out string spawnPointId))
             return false;
+        if (!SceneAuthorityState.TryGet(sceneName, out string hostName, out long epoch) || string.IsNullOrEmpty(hostName))
+            return false;
 
         string key = MakeGenerationKey(sceneName, spawnPointId);
-        context = new EnemyDamageContext(enemy, sceneName, spawnPointId, GetGeneration(key), enemy.Stats.Life.Current, enemy.entityCurrentState);
+        context = new EnemyDamageContext(enemy, sceneName, spawnPointId, GetGeneration(key), epoch,
+            string.Equals(Main.Multiplayer.PlayerName, hostName, StringComparison.Ordinal),
+            enemy.Stats.Life.Current, enemy.entityCurrentState, hit.HitSoundId, hit.DamageType, activeLocalHitContext);
+        activeLocalHitContext = context;
         return true;
     }
 
     internal static void CompleteLocalHit(EnemyDamageContext context)
     {
-        if (!context.Valid || applyingRemoteDeath || context.Enemy == null)
+        if (context == null || !context.Valid || applyingRemoteDeath || context.Enemy == null)
             return;
+        if (activeLocalHitContext == context)
+            activeLocalHitContext = context.PreviousContext;
 
         string key = MakeGenerationKey(context.SceneName, context.SpawnPointId);
         int current = GetGeneration(key);
         if (current != context.Generation)
             return;
 
-        // Death remains a separate packet so the receiver can run the native death lifecycle.
+        if (context.IsAuthority)
+        {
+            if (context.Enemy.Status.Dead)
+                CommitAuthorityDeath(context.SceneName, context.SpawnPointId, current, context.Epoch);
+            else if (context.ResolvedDamage > 0f)
+            {
+                bool enteredHurtState = context.StartingState != EntityStates.Hurt && context.Enemy.entityCurrentState == EntityStates.Hurt;
+                bool handlerNeedsHitCue = EnemySyncManager.TryGetHandler(context.Enemy, out EnemySyncHandler handler) && handler.SyncHitOnDamage;
+                if (enteredHurtState || handlerNeedsHitCue)
+                    Main.Multiplayer.NetworkManager.SendEnemyHit(context.SceneName, context.SpawnPointId, current, context.Epoch, Main.Multiplayer.PlayerName, (byte)context.DamageType, (byte)context.Enemy.Status.Orientation);
+            }
+            return;
+        }
+
+        if (context.ResolvedDamage <= 0f)
+            return;
         if (context.Enemy.Status.Dead)
+            SharedDiagnosticLogger.Warn($"[EnemyDamageSync] Follower unexpectedly committed local death before reconciliation scene={context.SceneName}, spawn={context.SpawnPointId}, generation={current}");
+
+        string hitId = Guid.NewGuid().ToString("N");
+        SharedDiagnosticLogger.Info($"[EnemyDamageSync] Reporting resolved hit scene={context.SceneName}, spawn={context.SpawnPointId}, generation={current}, damage={context.ResolvedDamage:0.###}, hit={hitId}");
+        Main.Multiplayer.NetworkManager.SendEnemyDamageReport(context.SceneName, context.SpawnPointId, current,
+            context.Epoch, hitId, context.ResolvedDamage, context.ImpactAudioId, (byte)context.DamageType, (byte)context.Enemy.Status.Orientation);
+    }
+
+    private static void CommitAuthorityDeath(string sceneName, string spawnPointId, int generation, long epoch)
+    {
+        if (!SceneAuthorityState.TryGet(sceneName, out string hostName, out long currentEpoch) || currentEpoch != epoch ||
+            !string.Equals(hostName, Main.Multiplayer?.PlayerName, StringComparison.Ordinal))
+            return;
+        string key = MakeGenerationKey(sceneName, spawnPointId);
+        if (GetGeneration(key) != generation) return;
+        generations[key] = generation + 1;
+        SharedDiagnosticLogger.Info($"[EnemyDeathSync] Authority committed death scene={sceneName}, spawn={spawnPointId}, generation={generation}, epoch={epoch}");
+        Main.Multiplayer.NetworkManager.SendEnemyDeath(sceneName, spawnPointId, generation, epoch);
+    }
+
+    private static bool ApplyNativeHurtRecovery(Enemy enemy)
+    {
+        if (enemy == null || DamageAreaDeltaRecoverTime == null) return false;
+        EnemyDamageArea[] damageAreas = enemy.GetComponentsInChildren<EnemyDamageArea>(true);
+        foreach (EnemyDamageArea damageArea in damageAreas)
         {
-            generations[key] = current + 1;
-            SharedDiagnosticLogger.Info($"[EnemyDeathSync] Local death scene={context.SceneName}, spawn={context.SpawnPointId}, generation={current}");
-            Main.Multiplayer.NetworkManager.SendEnemyDeath(context.SceneName, context.SpawnPointId, current);
+            if (damageArea == null) continue;
+            object value = DamageAreaDeltaRecoverTime.GetValue(damageArea);
+            if (!(value is float elapsed) || elapsed < damageArea.RecoverTime) continue;
+            DamageAreaDeltaRecoverTime.SetValue(damageArea, 0f);
+            enemy.entityCurrentState = EntityStates.Hurt;
+            return true;
+        }
+        return false;
+    }
+
+    internal static EnemyDamageContext ActiveLocalHitContext => activeLocalHitContext;
+
+    internal static bool ShouldSuppressPredictedDeath(Entity entity)
+    {
+        EnemyDamageContext context = activeLocalHitContext;
+        return context != null && context.Valid && context.Enemy == entity && !context.IsAuthority &&
+            !applyingRemoteDeath && !applyingRemoteDamage;
+    }
+
+    public static void ApplyAuthoritativeDamageReport(string sourcePlayerName, string sceneName, string spawnPointId,
+        int generation, long epoch, string hitId, float resolvedDamage, string impactAudioId, byte damageType, byte orientation)
+    {
+        if (string.IsNullOrEmpty(sourcePlayerName) || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
+            generation < 0 || epoch < 0 || string.IsNullOrEmpty(hitId) || resolvedDamage <= 0f ||
+            float.IsNaN(resolvedDamage) || float.IsInfinity(resolvedDamage) || damageType > 5 || orientation > 1)
+            return;
+        if (Core.LevelManager.currentLevel == null || Core.LevelManager.currentLevel.LevelName != sceneName ||
+            !SceneAuthorityState.TryGet(sceneName, out string hostName, out long currentEpoch) || currentEpoch != epoch ||
+            !string.Equals(hostName, Main.Multiplayer?.PlayerName, StringComparison.Ordinal))
+            return;
+
+        string dedupeKey = sourcePlayerName + "::" + hitId;
+        if (!processedHitIds.Add(dedupeKey)) return;
+        processedHitOrder.Enqueue(dedupeKey);
+        while (processedHitOrder.Count > ProcessedHitLimit) processedHitIds.Remove(processedHitOrder.Dequeue());
+
+        string key = MakeGenerationKey(sceneName, spawnPointId);
+        if (GetGeneration(key) != generation) return;
+        if (!TryFindSpawnPoint(sceneName, spawnPointId, out EnemySpawnPoint point))
+        {
+            QueuePendingDamageReport(key, sourcePlayerName, hitId, generation, resolvedDamage, impactAudioId, damageType, epoch, orientation);
+            return;
+        }
+        if (point.SpawnedEnemy == null)
+            point.CreateEnemy();
+        if (point.SpawnedEnemy == null && point.Consumed)
+        {
+            pendingDamageReports.Remove(key);
+            SharedDiagnosticLogger.Info($"[EnemyDamageSync] Host spawn is already consumed; committing authoritative death scene={sceneName}, spawn={spawnPointId}, generation={generation}");
+            CommitAuthorityDeath(sceneName, spawnPointId, generation, epoch);
+            return;
+        }
+        if (point.SpawnedEnemy == null)
+        {
+            QueuePendingDamageReport(key, sourcePlayerName, hitId, generation, resolvedDamage, impactAudioId, epoch, orientation);
+            return;
+        }
+        Enemy enemy = point.SpawnedEnemy;
+        ApplyDamageReportToEnemy(sceneName, spawnPointId, generation, epoch, sourcePlayerName, hitId, resolvedDamage, impactAudioId, damageType, orientation, enemy);
+    }
+
+    private static void QueuePendingDamageReport(string key, string sourcePlayerName, string hitId, int generation,
+        float resolvedDamage, string impactAudioId, byte damageType, long epoch, byte orientation)
+    {
+        if (!pendingDamageReports.TryGetValue(key, out List<PendingDamageReport> reports))
+        {
+            reports = new List<PendingDamageReport>();
+            pendingDamageReports.Add(key, reports);
+        }
+        if (reports.Count >= 64) return;
+        reports.Add(new PendingDamageReport(sourcePlayerName, hitId, generation, resolvedDamage, impactAudioId, damageType, epoch, orientation));
+        SharedDiagnosticLogger.Info($"[EnemyDamageSync] Queued hit until host enemy spawn sceneKey={key}, generation={generation}, source={sourcePlayerName}, hit={hitId}");
+    }
+
+    internal static void ReconcilePendingDamage(EnemySpawnPoint spawnPoint)
+    {
+        if (spawnPoint == null || Core.LevelManager.currentLevel == null) return;
+        string sceneName = Core.LevelManager.currentLevel.LevelName;
+        string spawnPointId = BuildSpawnPointId(spawnPoint);
+        string key = MakeGenerationKey(sceneName, spawnPointId);
+        if (!pendingDamageReports.TryGetValue(key, out List<PendingDamageReport> reports)) return;
+        int generation = GetGeneration(key);
+        if (!SceneAuthorityState.TryGet(sceneName, out string hostName, out long currentEpoch) ||
+            !string.Equals(hostName, Main.Multiplayer?.PlayerName, StringComparison.Ordinal)) return;
+
+        if (spawnPoint.SpawnedEnemy == null)
+        {
+            if (!spawnPoint.Consumed) return;
+            bool hasCurrentReport = false;
+            foreach (PendingDamageReport report in reports)
+                if (report.Generation == generation && report.Epoch == currentEpoch) { hasCurrentReport = true; break; }
+            pendingDamageReports.Remove(key);
+            if (hasCurrentReport)
+            {
+                SharedDiagnosticLogger.Info($"[EnemyDamageSync] Queued hit found consumed host spawn; committing death scene={sceneName}, spawn={spawnPointId}, generation={generation}");
+                CommitAuthorityDeath(sceneName, spawnPointId, generation, currentEpoch);
+            }
             return;
         }
 
-        // Measure actual HP before/after native damage processing so defense and
-        // invulnerability are already accounted for, regardless of the enemy handler.
-        if (!EnemySyncManager.Supports(context.Enemy))
-            return;
-
-        float damage = context.StartingHealth - context.Enemy.Stats.Life.Current;
-        bool tookDamage = damage > 0.001f;
-        if (tookDamage)
+        pendingDamageReports.Remove(key);
+        foreach (PendingDamageReport report in reports)
         {
-            SharedDiagnosticLogger.Info($"[EnemyHealthSync] Local damage scene={context.SceneName}, spawn={context.SpawnPointId}, generation={current}, damage={damage:0.##}");
-            Main.Multiplayer.NetworkManager.SendEnemyHealth(context.SceneName, context.SpawnPointId, current, damage);
+            if (report.Generation != generation || report.Epoch != currentEpoch) continue;
+            ApplyDamageReportToEnemy(sceneName, spawnPointId, generation, report.Epoch, report.SourcePlayerName, report.HitId,
+                report.ResolvedDamage, report.ImpactAudioId, report.DamageType, report.Orientation, spawnPoint.SpawnedEnemy);
+            if (GetGeneration(key) != generation) break;
         }
+    }
 
-        bool enteredHurtState = context.StartingState != EntityStates.Hurt && context.Enemy.entityCurrentState == EntityStates.Hurt;
-        bool handlerNeedsHitCue = tookDamage && EnemySyncManager.TryGetHandler(context.Enemy, out EnemySyncHandler handler) && handler.SyncHitOnDamage;
-        if (enteredHurtState || handlerNeedsHitCue)
-            Main.Multiplayer.NetworkManager.SendEnemyHit(context.SceneName, context.SpawnPointId, current, (byte)context.Enemy.Status.Orientation);
+    private static void ApplyDamageReportToEnemy(string sceneName, string spawnPointId, int generation, long epoch,
+        string sourcePlayerName, string hitId, float resolvedDamage, string impactAudioId, byte damageType, byte orientation, Enemy enemy)
+    {
+        string key = MakeGenerationKey(sceneName, spawnPointId);
+        if (GetGeneration(key) != generation || !EnemySyncManager.Supports(enemy) || enemy.Status.Dead) return;
+        if (!EnemySyncManager.TryGetHandler(enemy, out EnemySyncHandler handler))
+        {
+            EnemySyncManager.Attach(enemy);
+            EnemySyncManager.TryGetHandler(enemy, out handler);
+        }
+        if (handler == null) return;
+        EntityStates startingState = enemy.entityCurrentState;
+        applyingRemoteDamage = true;
+        try
+        {
+            bool wasActive = enemy.gameObject.activeInHierarchy;
+            enemy.Damage(resolvedDamage + enemy.Stats.Defense.Final, impactAudioId ?? string.Empty);
+            bool dead = enemy.Status.Dead;
+            bool enteredHurtState = !dead && ApplyNativeHurtRecovery(enemy);
+            if (!dead && !wasActive)
+            {
+                enemy.entityCurrentState = EntityStates.Hurt;
+                enteredHurtState = true;
+            }
+            handler.ApplyAuthoritativeDamageReaction(dead, orientation);
+            if (dead)
+            {
+                EnemyDamageArea[] damageAreas = enemy.GetComponentsInChildren<EnemyDamageArea>(true);
+                foreach (EnemyDamageArea damageArea in damageAreas)
+                {
+                    if (damageArea != null && damageArea.DamageAreaCollider != null)
+                        damageArea.DamageAreaCollider.enabled = false;
+                }
+            }
+            SharedDiagnosticLogger.Info($"[EnemyDamageSync] Host applied hit scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, damage={resolvedDamage:0.###}, hp={enemy.Stats.Life.Current:0.###}, dead={dead}, hit={hitId}");
+            if (dead) CommitAuthorityDeath(sceneName, spawnPointId, generation, epoch);
+            else
+            {
+                bool enteredHurtState = startingState != EntityStates.Hurt && enemy.entityCurrentState == EntityStates.Hurt;
+                if (enteredHurtState || handler.SyncHitOnDamage || !wasActive)
+                    Main.Multiplayer.NetworkManager.SendEnemyHit(sceneName, spawnPointId, generation, epoch, sourcePlayerName, damageType, orientation);
+            }
+        }
+        finally { applyingRemoteDamage = false; }
     }
 
     internal static bool TryGetSyncIdentity(Enemy enemy, out string sceneName, out string spawnPointId, out int generation)
@@ -194,10 +379,14 @@ public static class EnemyDeathSyncManager
         }
     }
 
-    public static void ApplyRemoteHit(string sceneName, string spawnPointId, int generation, byte orientation)
+    public static void ApplyRemoteHit(string authorityPlayerName, string hitSourcePlayerName, string sceneName, string spawnPointId, int generation, long epoch, byte damageType, byte orientation)
     {
-        if (orientation > 1 || !TryGetSpawnedEnemy(sceneName, spawnPointId, generation, out Enemy enemy) ||
+        if (damageType > 5 || orientation > 1 || string.IsNullOrEmpty(authorityPlayerName) || string.IsNullOrEmpty(hitSourcePlayerName) ||
+            !SceneAuthorityState.TryGet(sceneName, out string hostName, out long currentEpoch) || currentEpoch != epoch ||
+            !string.Equals(hostName, authorityPlayerName, StringComparison.Ordinal) ||
+            !TryGetSpawnedEnemy(sceneName, spawnPointId, generation, out Enemy enemy) ||
             !EnemySyncManager.TryGetHandler(enemy, out EnemySyncHandler handler)) return;
+        if (string.Equals(hitSourcePlayerName, Main.Multiplayer?.PlayerName, StringComparison.Ordinal)) return;
         handler.ApplyRemoteHit(orientation);
     }
 
@@ -241,46 +430,6 @@ public static class EnemyDeathSyncManager
         pendingEnemyHealth.Remove(key);
         currentHealth = pending.CurrentHealth;
         return true;
-    }
-
-    public static void ApplyRemoteDamage(string sceneName, string spawnPointId, int generation, float damage)
-    {
-        if (applyingRemoteDeath || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
-            generation < 0 || damage <= 0f || float.IsNaN(damage) || float.IsInfinity(damage))
-            return;
-        if (Core.LevelManager.currentLevel == null || Core.LevelManager.currentLevel.LevelName != sceneName)
-            return;
-
-        string key = MakeGenerationKey(sceneName, spawnPointId);
-        int current = GetGeneration(key);
-        if (current != generation)
-            return;
-
-        if (!TryFindSpawnPoint(sceneName, spawnPointId, out EnemySpawnPoint spawnPoint))
-        {
-            SharedDiagnosticLogger.Warn($"[EnemyHealthSync] Spawn point not found or identity is ambiguous: scene={sceneName}, spawn={spawnPointId}");
-            return;
-        }
-
-        Enemy enemy = spawnPoint.SpawnedEnemy;
-        if (!EnemySyncManager.Supports(enemy) || enemy.Status.Dead)
-            return;
-
-        float newHealth = enemy.Stats.Life.Current - damage;
-        if (newHealth <= 0f)
-        {
-            // Multiple clients can land individually nonlethal hits before receiving each
-            // other's packets. Their combined damage may be lethal, so promote that result
-            // through the same native death path used by the explicit death packet.
-            ApplyRemoteDeath(sceneName, spawnPointId, generation);
-            // This client may be the first to observe lethal combined damage from multiple
-            // peers. Rebroadcast the resulting death so every session member advances state.
-            Main.Multiplayer.NetworkManager.SendEnemyDeath(sceneName, spawnPointId, generation);
-            return;
-        }
-
-        enemy.SetHealth(newHealth);
-        SharedDiagnosticLogger.Info($"[EnemyHealthSync] Applied remote damage scene={sceneName}, spawn={spawnPointId}, generation={generation}, damage={damage:0.##}, hp={newHealth:0.##}");
     }
 
     public static void ApplyRemoteDeath(string sceneName, string spawnPointId, int generation)
@@ -391,8 +540,10 @@ public static class EnemyDeathSyncManager
         // same generation on every client.
         int clearedCount = pendingRemoteDeaths.Count;
         pendingRemoteDeaths.Clear();
+        int clearedDamageReports = pendingDamageReports.Count;
+        pendingDamageReports.Clear();
 
-        SharedDiagnosticLogger.Info($"[EnemyDeathSync] Cleared {clearedCount} pending remote death(s) across all scenes for world reset; generation counters preserved.");
+        SharedDiagnosticLogger.Info($"[EnemyDeathSync] Cleared {clearedCount} pending remote death(s) and {clearedDamageReports} pending damage queue(s) across all scenes for world reset; generation counters preserved.");
     }
 
     public static void ResetSession()
@@ -400,7 +551,26 @@ public static class EnemyDeathSyncManager
         generations.Clear();
         pendingEnemyHealth.Clear();
         pendingRemoteDeaths.Clear();
+        pendingDamageReports.Clear();
         applyingRemoteDeath = false;
+        applyingRemoteDamage = false;
+        activeLocalHitContext = null;
+        processedHitIds.Clear();
+        processedHitOrder.Clear();
+    }
+
+    private readonly struct PendingDamageReport
+    {
+        internal readonly string SourcePlayerName;
+        internal readonly string HitId;
+        internal readonly int Generation;
+        internal readonly float ResolvedDamage;
+        internal readonly string ImpactAudioId;
+        internal readonly byte DamageType;
+        internal readonly long Epoch;
+        internal readonly byte Orientation;
+        internal PendingDamageReport(string sourcePlayerName, string hitId, int generation, float resolvedDamage, string impactAudioId, byte damageType, long epoch, byte orientation)
+        { SourcePlayerName = sourcePlayerName; HitId = hitId; Generation = generation; ResolvedDamage = resolvedDamage; ImpactAudioId = impactAudioId; DamageType = damageType; Epoch = epoch; Orientation = orientation; }
     }
 
     private readonly struct PendingEnemyHealth
@@ -492,25 +662,28 @@ public static class EnemyDeathSyncManager
     }
 }
 
-internal struct EnemyDamageContext
+internal sealed class EnemyDamageContext
 {
     internal readonly Enemy Enemy;
     internal readonly string SceneName;
     internal readonly string SpawnPointId;
     internal readonly int Generation;
+    internal readonly long Epoch;
+    internal readonly bool IsAuthority;
     internal readonly float StartingHealth;
     internal readonly EntityStates StartingState;
+    internal readonly EnemyDamageContext PreviousContext;
+    internal readonly string ImpactAudioId;
+    internal readonly DamageArea.DamageType DamageType;
+    internal float ResolvedDamage;
     internal readonly bool Valid;
 
-    internal EnemyDamageContext(Enemy enemy, string sceneName, string spawnPointId, int generation, float startingHealth, EntityStates startingState)
+    internal EnemyDamageContext(Enemy enemy, string sceneName, string spawnPointId, int generation, long epoch, bool isAuthority,
+        float startingHealth, EntityStates startingState, string impactAudioId, DamageArea.DamageType damageType, EnemyDamageContext previousContext)
     {
-        Enemy = enemy;
-        SceneName = sceneName;
-        SpawnPointId = spawnPointId;
-        Generation = generation;
-        StartingHealth = startingHealth;
-        StartingState = startingState;
-        Valid = true;
+        Enemy = enemy; SceneName = sceneName; SpawnPointId = spawnPointId; Generation = generation;
+        Epoch = epoch; IsAuthority = isAuthority; StartingHealth = startingHealth; StartingState = startingState;
+        ImpactAudioId = impactAudioId; DamageType = damageType; PreviousContext = previousContext; Valid = true;
     }
 }
 
@@ -529,6 +702,29 @@ internal static class EnemyDamageAreaDeathSync_Patch
         EnemyDeathSyncManager.CompleteLocalHit(__state);
     }
 }
+[HarmonyPatch(typeof(Entity), nameof(Entity.Damage))]
+internal static class EnemyResolvedDamageCapture_Patch
+{
+    [HarmonyPrefix]
+    private static void Prefix(Entity __instance, float amount)
+    {
+        EnemyDamageContext context = EnemyDeathSyncManager.ActiveLocalHitContext;
+        if (context != null && context.Enemy == __instance && __instance.Stats != null)
+            context.ResolvedDamage += Mathf.Max(amount - __instance.Stats.Defense.Final, 0f);
+    }
+}
+
+[HarmonyPatch(typeof(Entity), nameof(Entity.KillInstanteneously))]
+internal static class EnemyPredictedDeathSuppression_Patch
+{
+    [HarmonyPrefix]
+    private static bool Prefix(Entity __instance)
+    {
+        if (!EnemyDeathSyncManager.ShouldSuppressPredictedDeath(__instance)) return true;
+        __instance.SetHealth(1f);
+        return false;
+    }
+}
 [HarmonyPatch(typeof(EnemySpawnPoint), nameof(EnemySpawnPoint.CreateEnemy))]
 internal static class EnemySpawnPointDeathSync_Patch
 {
@@ -536,5 +732,11 @@ internal static class EnemySpawnPointDeathSync_Patch
     private static void Prefix(EnemySpawnPoint __instance)
     {
         EnemyDeathSyncManager.ReconcilePendingDeath(__instance);
+    }
+
+    [HarmonyPostfix]
+    private static void Postfix(EnemySpawnPoint __instance)
+    {
+        EnemyDeathSyncManager.ReconcilePendingDamage(__instance);
     }
 }

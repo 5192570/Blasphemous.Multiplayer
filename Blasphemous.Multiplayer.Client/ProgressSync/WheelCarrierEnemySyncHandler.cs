@@ -89,7 +89,27 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     {
         if (_wheelCarrier == null) return;
         _wheelCarrier.SetOrientation((EntityOrientation)orientation);
+        if (_wheelCarrier.Behaviour != null && _wheelCarrier.Behaviour.GotParry)
+            _wheelCarrier.Behaviour.GotParry = false;
         if (_wheelCarrier.DamageEffect != null) _wheelCarrier.DamageEffect.Blink(0f, 0.1f);
+    }
+
+    internal override void ApplyAuthoritativeDamageReaction(bool dead, byte orientation)
+    {
+        if (_wheelCarrier == null) return;
+        _wheelCarrier.SetOrientation((EntityOrientation)orientation);
+        if (dead)
+        {
+            if (_wheelCarrier.Behaviour != null) _wheelCarrier.Behaviour.Death();
+            if (_wheelCarrier.Audio != null) _wheelCarrier.Audio.PlayDeath();
+        }
+        else
+        {
+            if (_wheelCarrier.Behaviour != null && _wheelCarrier.Behaviour.GotParry)
+                _wheelCarrier.Behaviour.GotParry = false;
+            if (_wheelCarrier.DamageEffect != null)
+                _wheelCarrier.DamageEffect.Blink(0f, 0.1f);
+        }
     }
 
     internal override void ApplyDeath()

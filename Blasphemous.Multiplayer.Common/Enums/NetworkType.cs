@@ -26,4 +26,5 @@ public enum NetworkType
     DiagnosticControl = 20,
     DiagnosticBatch = 21,
     SceneAuthority = 22,
+    EnemyDamageReport = 23,
 }

@@ -5,8 +5,8 @@ using Blasphemous.ModdingAPI;
 namespace Blasphemous.Multiplayer.Client.Network;
 
 /// <summary>
-/// Client-side cache of server-issued scene ownership. This cache is informational
-/// until enemy packet validation is migrated to the ownership epoch.
+/// Client-side cache of server-issued scene ownership, used to validate host authority
+/// and stamp authoritative enemy damage and death operations.
 /// </summary>
 internal static class SceneAuthorityState
 {

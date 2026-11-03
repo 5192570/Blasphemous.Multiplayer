@@ -26,5 +26,6 @@ public abstract class EnemySyncHandler : MonoBehaviour
     internal abstract void SetTarget(GameObject target);
     internal abstract void ApplySnapshot(byte orientation, byte state, bool walking);
     internal abstract void ApplyRemoteHit(byte orientation);
+    internal abstract void ApplyAuthoritativeDamageReaction(bool dead, byte orientation);
     internal abstract void ApplyDeath();
 }

@@ -204,7 +204,7 @@ namespace Blasphemous.Multiplayer.Client.Network
                         case NetworkType.Ping: ReceivePing(messageData); break;
                         case NetworkType.WorldReset: ReceiveWorldReset(messageData); break;
                         case NetworkType.EnemyDeath: ReceiveEnemyDeath(messageData); break;
-                        case NetworkType.EnemyHealth: ReceiveEnemyHealth(messageData); break;
+                        case NetworkType.EnemyDamageReport: ReceiveEnemyDamageReport(messageData); break;
                         case NetworkType.EnemyHit: ReceiveEnemyHit(messageData); break;
                         case NetworkType.EnemyPosition: ReceiveEnemyPosition(messageData); break;
                         case NetworkType.PlayerImpact: ReceivePlayerImpact(messageData); break;
@@ -542,52 +542,45 @@ namespace Blasphemous.Multiplayer.Client.Network
 
         // Shared enemy health and death
 
-        public void SendEnemyHealth(string sceneName, string spawnPointId, int generation, float damage)
+        public void SendEnemyDamageReport(string sceneName, string spawnPointId, int generation, long epoch, string hitId, float resolvedDamage, string impactAudioId, byte damageType, byte orientation)
         {
-            if (!IsConnected || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
-                generation < 0 || damage <= 0f || float.IsNaN(damage) || float.IsInfinity(damage)) return;
-
+            if (!IsConnected || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 ||
+                string.IsNullOrEmpty(hitId) || resolvedDamage <= 0f || float.IsNaN(resolvedDamage) || float.IsInfinity(resolvedDamage) || damageType > 5 || orientation > 1) return;
             using (MemoryStream stream = new MemoryStream())
             using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8))
             {
-                writer.Write(sceneName);
-                writer.Write(spawnPointId);
-                writer.Write(generation);
-                writer.Write(damage);
-                QueueMesssage(stream.ToArray(), NetworkType.EnemyHealth);
+                writer.Write(sceneName); writer.Write(spawnPointId); writer.Write(generation); writer.Write(epoch);
+                writer.Write(hitId); writer.Write(resolvedDamage); writer.Write(impactAudioId ?? string.Empty); writer.Write(damageType); writer.Write(orientation);
+                QueueMesssage(stream.ToArray(), NetworkType.EnemyDamageReport);
             }
         }
 
-        private void ReceiveEnemyHealth(byte[] data)
+        private void ReceiveEnemyDamageReport(byte[] data)
         {
             try
             {
-                using (MemoryStream stream = new MemoryStream(data))
+                int offset = ExtractNameFromData(data, out string sourcePlayerName);
+                using (MemoryStream stream = new MemoryStream(data, offset, data.Length - offset))
                 using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
                 {
-                    string sceneName = reader.ReadString();
-                    string spawnPointId = reader.ReadString();
-                    int generation = reader.ReadInt32();
-                    float damage = reader.ReadSingle();
-                    if (stream.Position != stream.Length || generation < 0 || damage <= 0f ||
-                        float.IsNaN(damage) || float.IsInfinity(damage)) return;
-
-                    EnemyDeathSyncManager.ApplyRemoteDamage(sceneName, spawnPointId, generation, damage);
+                    string sceneName = reader.ReadString(); string spawnPointId = reader.ReadString();
+                    int generation = reader.ReadInt32(); long epoch = reader.ReadInt64();
+                    string hitId = reader.ReadString(); float resolvedDamage = reader.ReadSingle(); string impactAudioId = reader.ReadString(); byte damageType = reader.ReadByte(); byte orientation = reader.ReadByte();
+                    if (stream.Position != stream.Length) return;
+                    EnemyDeathSyncManager.ApplyAuthoritativeDamageReport(sourcePlayerName, sceneName, spawnPointId,
+                        generation, epoch, hitId, resolvedDamage, impactAudioId, damageType, orientation);
                 }
             }
-            catch (Exception ex)
-            {
-                ModLog.Warn($"Ignored malformed enemy health packet: {ex.GetType().Name}: {ex.Message}");
-            }
+            catch (Exception ex) { ModLog.Warn($"Ignored malformed enemy damage report: {ex.GetType().Name}: {ex.Message}"); }
         }
 
-        public void SendEnemyHit(string sceneName, string spawnPointId, int generation, byte orientation)
+        public void SendEnemyHit(string sceneName, string spawnPointId, int generation, long epoch, string hitSourcePlayerName, byte damageType, byte orientation)
         {
-            if (!IsConnected || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || orientation > 1) return;
+            if (!IsConnected || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 || string.IsNullOrEmpty(hitSourcePlayerName) || damageType > 5 || orientation > 1) return;
             using (MemoryStream stream = new MemoryStream())
             using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8))
             {
-                writer.Write(sceneName); writer.Write(spawnPointId); writer.Write(generation); writer.Write(orientation);
+                writer.Write(sceneName); writer.Write(spawnPointId); writer.Write(generation); writer.Write(epoch); writer.Write(hitSourcePlayerName); writer.Write(damageType); writer.Write(orientation);
                 QueueMesssage(stream.ToArray(), NetworkType.EnemyHit);
             }
         }
@@ -596,13 +589,14 @@ namespace Blasphemous.Multiplayer.Client.Network
         {
             try
             {
-                using (MemoryStream stream = new MemoryStream(data))
+                int offset = ExtractNameFromData(data, out string sourcePlayerName);
+                using (MemoryStream stream = new MemoryStream(data, offset, data.Length - offset))
                 using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
                 {
                     string sceneName = reader.ReadString(); string spawnPointId = reader.ReadString();
-                    int generation = reader.ReadInt32(); byte orientation = reader.ReadByte();
-                    if (stream.Position != stream.Length || generation < 0 || orientation > 1) return;
-                    EnemyDeathSyncManager.ApplyRemoteHit(sceneName, spawnPointId, generation, orientation);
+                    int generation = reader.ReadInt32(); long epoch = reader.ReadInt64(); string hitSourcePlayerName = reader.ReadString(); byte damageType = reader.ReadByte(); byte orientation = reader.ReadByte();
+                    if (stream.Position != stream.Length || generation < 0 || epoch < 0 || damageType > 5 || orientation > 1) return;
+                    EnemyDeathSyncManager.ApplyRemoteHit(sourcePlayerName, hitSourcePlayerName, sceneName, spawnPointId, generation, epoch, damageType, orientation);
                 }
             }
             catch (Exception ex) { ModLog.Warn($"Ignored malformed enemy hit packet: {ex.GetType().Name}: {ex.Message}"); }
@@ -697,9 +691,9 @@ namespace Blasphemous.Multiplayer.Client.Network
             }
         }
 
-        public void SendEnemyDeath(string sceneName, string spawnPointId, int generation)
+        public void SendEnemyDeath(string sceneName, string spawnPointId, int generation, long epoch)
         {
-            if (!IsConnected || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0) return;
+            if (!IsConnected || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0) return;
 
             using (MemoryStream stream = new MemoryStream())
             using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8))
@@ -707,6 +701,7 @@ namespace Blasphemous.Multiplayer.Client.Network
                 writer.Write(sceneName);
                 writer.Write(spawnPointId);
                 writer.Write(generation);
+                writer.Write(epoch);
                 QueueMesssage(stream.ToArray(), NetworkType.EnemyDeath);
             }
         }
@@ -721,7 +716,8 @@ namespace Blasphemous.Multiplayer.Client.Network
                     string sceneName = reader.ReadString();
                     string spawnPointId = reader.ReadString();
                     int generation = reader.ReadInt32();
-                    if (stream.Position != stream.Length || generation < 0) return;
+                    long epoch = reader.ReadInt64();
+                    if (stream.Position != stream.Length || generation < 0 || epoch < 0) return;
 
                     EnemyDeathSyncManager.ApplyRemoteDeath(sceneName, spawnPointId, generation);
                 }

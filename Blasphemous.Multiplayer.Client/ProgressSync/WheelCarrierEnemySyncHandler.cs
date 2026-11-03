@@ -45,6 +45,8 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         _wheelCarrier.SetOrientation((EntityOrientation)orientation);
         if (_specialState == state) return;
 
+        string nativeMethod = state == 0 ? (_specialState == 2 ? "Alive" : "clear-parry") : state == 1 ? "Parry" : "Execution";
+        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Native apply begin enemyInstance={_wheelCarrier.GetInstanceID()}, before={_specialState}, requested={state}, method={nativeMethod}, orientation={orientation}, time={Time.realtimeSinceStartup:0.000}");
         _applyingRemoteSpecialState = true;
         try
         {

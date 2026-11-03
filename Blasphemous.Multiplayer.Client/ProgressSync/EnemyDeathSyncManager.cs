@@ -424,7 +424,9 @@ public static class EnemyDeathSyncManager
             return;
         }
 
-        Main.Multiplayer.NetworkManager.SendEnemyStateReport(sceneName, spawnPointId, generation, epoch, GetRevision(sceneName, spawnPointId, generation, epoch), state,
+        long observedRevision = GetRevision(sceneName, spawnPointId, generation, epoch);
+        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Report send scene={sceneName}, spawn={spawnPointId}, generation={generation}, state={state}, epoch={epoch}, observedRevision={observedRevision}, orientation={(byte)wheelCarrier.Status.Orientation}, time={Time.realtimeSinceStartup:0.000}");
+        Main.Multiplayer.NetworkManager.SendEnemyStateReport(sceneName, spawnPointId, generation, epoch, observedRevision, state,
             (byte)wheelCarrier.Status.Orientation);
         SharedDiagnosticLogger.Info($"[WheelCarrierStateSync] Reported local state scene={sceneName}, spawn={spawnPointId}, generation={generation}, state={state}, epoch={epoch}");
     }
@@ -432,29 +434,59 @@ public static class EnemyDeathSyncManager
     public static void ApplyRemoteWheelCarrierStateReport(string sourcePlayerName, string sceneName, string spawnPointId,
         int generation, long epoch, long observedRevision, byte state, byte orientation)
     {
+        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Host report received scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, state={state}, epoch={epoch}, observedRevision={observedRevision}, orientation={orientation}, time={Time.realtimeSinceStartup:0.000}");
+        string rejection = null;
+        string hostName = null;
+        long currentEpoch = -1;
+        EnemySpawnPoint point = null;
         if (string.IsNullOrEmpty(sourcePlayerName) || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
-            generation < 0 || epoch < 0 || observedRevision < 0 || state > 2 || orientation > 1 ||
-            Core.LevelManager.currentLevel == null || Core.LevelManager.currentLevel.LevelName != sceneName ||
-            !SceneAuthorityState.TryGet(sceneName, out string hostName, out long currentEpoch) || currentEpoch != epoch ||
-            !string.Equals(hostName, Main.Multiplayer?.PlayerName, StringComparison.Ordinal) ||
-            string.Equals(hostName, sourcePlayerName, StringComparison.Ordinal) ||
-            GetGeneration(MakeGenerationKey(sceneName, spawnPointId)) != generation ||
-            !TryFindSpawnPoint(sceneName, spawnPointId, out EnemySpawnPoint point))
+            generation < 0 || epoch < 0 || observedRevision < 0 || state > 2 || orientation > 1)
+            rejection = "invalid report fields";
+        else if (Core.LevelManager.currentLevel == null || Core.LevelManager.currentLevel.LevelName != sceneName)
+            rejection = $"host scene mismatch current={Core.LevelManager.currentLevel?.LevelName}";
+        else if (!SceneAuthorityState.TryGet(sceneName, out hostName, out currentEpoch) || currentEpoch != epoch)
+            rejection = $"authority epoch mismatch host={hostName}, currentEpoch={currentEpoch}";
+        else if (!string.Equals(hostName, Main.Multiplayer?.PlayerName, StringComparison.Ordinal))
+            rejection = $"local player is not host host={hostName}, local={Main.Multiplayer?.PlayerName}";
+        else if (string.Equals(hostName, sourcePlayerName, StringComparison.Ordinal))
+            rejection = "source is host";
+        else if (GetGeneration(MakeGenerationKey(sceneName, spawnPointId)) != generation)
+            rejection = $"generation mismatch current={GetGeneration(MakeGenerationKey(sceneName, spawnPointId))}";
+        else if (!TryFindSpawnPoint(sceneName, spawnPointId, out point))
+            rejection = "spawn point not found";
+
+        if (rejection != null)
+        {
+            SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Host report rejected scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, state={state}, epoch={epoch}, observedRevision={observedRevision}, reason={rejection}, time={Time.realtimeSinceStartup:0.000}");
             return;
+        }
 
         if (point.SpawnedEnemy == null)
             point.CreateEnemy();
         if (!(point.SpawnedEnemy is WheelCarrier wheelCarrier))
+        {
+            SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Host report rejected scene={sceneName}, spawn={spawnPointId}, source={sourcePlayerName}, reason=spawned enemy is {point.SpawnedEnemy?.GetType().Name ?? "null"}");
             return;
+        }
 
         EnemySyncManager.Attach(wheelCarrier);
         WheelCarrierEnemySyncHandler handler = wheelCarrier.GetComponent<WheelCarrierEnemySyncHandler>();
-        if (handler != null && handler.SpecialState != state)
+        if (handler == null)
         {
-            handler.ApplyRemoteSpecialState(state, orientation);
-            long revision = AdvanceRevision(sceneName, spawnPointId, generation, epoch, "WheelCarrier special-state transition");
-            SharedDiagnosticLogger.Info($"[WheelCarrierStateSync] Host applied follower state scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, state={state}, epoch={epoch}, revision={revision}");
+            SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Host report rejected scene={sceneName}, spawn={spawnPointId}, source={sourcePlayerName}, reason=sync handler missing");
+            return;
         }
+        byte currentState = handler.SpecialState;
+        if (currentState == state)
+        {
+            SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Host report redundant scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, requestedState={state}, hostState={currentState}, epoch={epoch}, observedRevision={observedRevision}, hostRevision={GetRevision(sceneName, spawnPointId, generation, epoch)}, time={Time.realtimeSinceStartup:0.000}");
+            return;
+        }
+
+        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Host applying report scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, beforeState={currentState}, requestedState={state}, epoch={epoch}, observedRevision={observedRevision}, hostRevision={GetRevision(sceneName, spawnPointId, generation, epoch)}, time={Time.realtimeSinceStartup:0.000}");
+        handler.ApplyRemoteSpecialState(state, orientation);
+        long revision = AdvanceRevision(sceneName, spawnPointId, generation, epoch, "WheelCarrier special-state transition");
+        SharedDiagnosticLogger.Info($"[WheelCarrierStateSync] Host applied follower state scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, state={state}, epoch={epoch}, revision={revision}");
     }
 
     public static void ApplyRemotePosition(string sceneName, string spawnPointId, int generation, long epoch, long revision, Vector3 position, byte orientation, byte state, byte specialState, bool walking, float currentHealth)

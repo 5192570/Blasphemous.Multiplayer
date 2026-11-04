@@ -420,12 +420,39 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
                 // Execution() disables the attack in vanilla. Keep the sprite visible on
                 // observers: the Execution prefab that replaces it only exists on the
                 // owner's client.
-                if (_specialState == 2 && _wheelCarrier.Attack != null) _wheelCarrier.Attack.gameObject.SetActive(false);
+                if (_specialState == 2)
+                {
+                    if (_wheelCarrier.Attack != null) _wheelCarrier.Attack.gameObject.SetActive(false);
+                    ApplyExecutionParity();
+                }
                 break;
             default:
                 RestoreAlivePresentation();
                 break;
         }
+    }
+
+    /// <summary>
+    /// The gameplay half of WheelCarrierBehaviour.Execution() that is not presentation:
+    /// EnemyBehaviour.Execution() (WheelCarrierBehaviour.cs calls it through base.Execution())
+    /// sets <see cref="Enemy.IsStunt"/>, and Execution() moves the root to the Default layer so
+    /// the player's weapon stops colliding with an enemy that is already being finished.
+    ///
+    /// Mirroring both keeps the observer's attacks from rolling a local
+    /// WheelCarrier.Damage -> Enemy.Execution(hit) on an enemy the owner has already taken out
+    /// of play, and stops it dealing contact damage or being displaced while it is stunted
+    /// (ContactDamage.cs / EntityDisplacement.cs both test IsStunt).
+    ///
+    /// The flag is set directly rather than through Behaviour.Execution(): that is the native,
+    /// virtual transition method, and running it here is exactly what the mirror exists to avoid.
+    /// Sprite visibility is deliberately *not* part of this patch; observers keep the enemy
+    /// visible because the Execution prefab that replaces it only exists on the owner's client.
+    /// </summary>
+    private void ApplyExecutionParity()
+    {
+        _wheelCarrier.IsStunt = true;
+        int executionLayer = LayerMask.NameToLayer("Default");
+        if (executionLayer >= 0) _wheelCarrier.gameObject.layer = executionLayer;
     }
 
     /// <summary>
@@ -437,6 +464,10 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         if (_wheelCarrier == null || _wheelCarrier.Behaviour == null) return;
 
         _wheelCarrier.Behaviour.GotParry = false;
+        // Undo the state-2 mirror parity alongside the rest of the restoration. Native
+        // Alive() clears IsStunt (EnemyBehaviour.cs) and puts the entity back on Enemy; a
+        // parry-only mirror (state 1) never set either, so this is a no-op for it.
+        _wheelCarrier.IsStunt = false;
         int enemyLayer = LayerMask.NameToLayer("Enemy");
         if (enemyLayer >= 0) _wheelCarrier.gameObject.layer = enemyLayer;
         if (_wheelCarrier.SpriteRenderer != null) _wheelCarrier.SpriteRenderer.enabled = true;

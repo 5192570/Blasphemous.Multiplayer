@@ -71,16 +71,19 @@ renderer is off, so nothing of the enemy is visible while the state lasts.
 Consequences for the mirror, which currently diverge:
 
 * P1 shows the parry pose — the owner shows **no enemy at all** plus the prefab.
-* P1 keeps `layer = Enemy`, so P1's own sword can still hit the executionable enemy and roll
-  `WheelCarrier.Damage` → `Enemy.Execution(hit)` locally. `RestoreAlivePresentation` assumes the
-  `Enemy` layer, so layer parity is currently implicit rather than deliberate.
+* ~~P1 keeps `layer = Enemy`, so P1's own sword can still hit the executionable enemy and roll
+  `WheelCarrier.Damage` → `Enemy.Execution(hit)` locally.~~ Closed: `ApplyExecutionParity()`
+  mirrors the `Default` layer and `IsStunt` for state 2, and `RestoreAlivePresentation` undoes
+  both. P1 now matches the owner's collision behaviour, while staying visible (the sprite is
+  still shown on purpose; only the prefab work would change that).
 * P1 never disables `SpriteRenderer`; if we ever do, we must re-enable it in
   `RestoreAlivePresentation` (it already does).
 * `base.Execution()` (`EnemyBehaviour.cs:339`) sets `Entity.IsStunt = true`, and `base.Alive()`
   clears it. `IsStunt` gates `ContactDamage` (`Entities/ContactDamage.cs:59`) and
-  `EntityDisplacement` (`Entities/EntityDisplacement.cs:69`), so a mirrored parry/execution
-  currently still deals contact damage and can still be shoved on the observer. This is the one
-  fidelity gap that costs nothing to close: it needs no prefab, only the flag.
+  `EntityDisplacement` (`Entities/EntityDisplacement.cs:69`), so before this was mirrored a
+  parried/executing enemy still dealt contact damage and could still be shoved on the observer.
+  Closed for state 2 by `ApplyExecutionParity()`; state 1 deliberately keeps the native parry
+  behaviour (`EnemyBehaviour.Parry()` never sets the flag, so the flag stays false).
 
 ### 2.3 Locomotion, AI and cosmetics (owning client only)
 

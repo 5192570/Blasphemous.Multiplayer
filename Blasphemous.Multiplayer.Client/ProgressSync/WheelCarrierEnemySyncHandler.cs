@@ -76,6 +76,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     private GameObject _executionPresentation;
     private Animator _executionPresentationAnimator;
     private float _executionPresentationStartedAt;
+    private bool _executionClipEndedLogged;
     private static bool _executionPrefabShapeLogged;
 
     // Diagnostics only: after a death we watch both hierarchies for a bounded window and log
@@ -469,6 +470,16 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         }
 
         if (_executionPresentationAnimator == null) return;
+
+        // The interactor animator leaves its USED state before the clone is retired, and the clone
+        // keeps drawing its prompt art in the meantime. Record that tail: it is the window where
+        // only leftover executionable art is on screen.
+        if (!_executionClipEndedLogged && WheelCarrierVisualProbe.DescribeClip(_executionPresentationAnimator) == "null")
+        {
+            _executionClipEndedLogged = true;
+            SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Execution clip ended, clone still drawing enemyInstance={_wheelCarrier?.GetInstanceID()}, age={age:0.000}, clip=null, cloneRenderers={WheelCarrierVisualProbe.Describe(_executionPresentation.transform)}, time={Time.realtimeSinceStartup:0.000}");
+        }
+
         AnimatorStateInfo info = _executionPresentationAnimator.GetCurrentAnimatorStateInfo(0);
         if (info.normalizedTime >= 1f) DestroyExecutionPresentation("execution clip finished");
     }
@@ -483,6 +494,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         Destroy(_executionPresentation);
         _executionPresentation = null;
         _executionPresentationAnimator = null;
+        _executionClipEndedLogged = false;
 
         // Only a survivor needs its sprite back; after a completed execution the enemy is dead
         // and has already been hidden by ApplyDeath.

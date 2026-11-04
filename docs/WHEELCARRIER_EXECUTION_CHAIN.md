@@ -604,3 +604,28 @@ The one place where a report could vanish silently was the "execution is termina
 report arriving while the mirror holds the executionable state is dropped. That is deliberate, but it
 was invisible; it now logs `Ignored parry report while mirroring executionable` with how long the
 state had been held.
+
+### 12.2 What the first probe run already showed
+
+Two things the probe got right, and one it could not answer.
+
+**Identified: the duplicate body.** Both interactor hierarchies draw the same victim frames, in the
+same order, on the same sorting slot:
+
+```text
+Left  Interactor Animation/RecolorSprite image=YellowCartwheel_execution_1  sorting=Player:5
+Right Interactor Animation/RecolorSprite image=YellowCartwheel_execution_1  sorting=Player:5
+... _3, _4, _5, _7 ... (identical sequences, step for step)
+```
+
+**Identified: the leftover executionable art.** The clone's `Interactable Animation` plays
+`WheelCarrier_stun` for the clone's entire lifetime - 0.00 at 73.1 s, 3.5 at 77.3 s, still 4.16 in the
+final dump at 78.098 - long after the interactors have finished their `USED` state (their clip goes
+`null` at 76.413). Nothing hides it, which is section 8.1 item 2, now with a clip name attached.
+
+**Missed: every renderer on a GameObject that also has an Animator.** `Capture` keyed entries by path
+alone, so `sprite|<path>` was overwritten by `anim|<path>` for exactly the objects that matter - the
+enemy's own `#Constitution/Sprite`, the clone's `Interactable Animation` - and both dumps showed the
+animator state while the renderer that decides whether anything is drawn stayed invisible. Fixed:
+the component kind is part of the key, and playback detail (`normalized`) is only included in the
+one-shot dumps, not in the diff, so clip-time churn no longer buries the transitions.

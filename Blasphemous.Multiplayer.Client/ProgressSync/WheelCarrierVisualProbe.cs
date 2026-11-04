@@ -14,40 +14,58 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync
     /// </summary>
     internal static class WheelCarrierVisualProbe
     {
-        internal static Dictionary<string, string> Capture(Transform root)
+        /// <summary>
+        /// Keyed by component kind and path. The kind is part of the key because a GameObject that
+        /// has both a renderer and an animator (the clone's prompt art and body sprites, the
+        /// enemy's own sprite) would otherwise collapse to one entry and the renderer - the thing
+        /// that actually draws - would be the one overwritten.
+        /// </summary>
+        internal static Dictionary<string, string> Capture(Transform root, bool includePlayback = false)
         {
             Dictionary<string, string> state = new Dictionary<string, string>();
             if (root == null) return state;
 
             foreach (SpriteRenderer sprite in root.GetComponentsInChildren<SpriteRenderer>(true))
             {
-                state[DescribePath(root, sprite.transform)] =
-                    $"sprite enabled={sprite.enabled} active={sprite.gameObject.activeInHierarchy} color=#{ColorUtility.ToHtmlStringRGBA(sprite.color)} mat={(sprite.sharedMaterial != null ? sprite.sharedMaterial.name : "null")} image={(sprite.sprite != null ? sprite.sprite.name : "null")} sorting={sprite.sortingLayerName}:{sprite.sortingOrder}";
+                state["sprite|" + DescribePath(root, sprite.transform)] =
+                    $"enabled={sprite.enabled} active={sprite.gameObject.activeInHierarchy} color=#{ColorUtility.ToHtmlStringRGBA(sprite.color)} mat={(sprite.sharedMaterial != null ? sprite.sharedMaterial.name : "null")} image={(sprite.sprite != null ? sprite.sprite.name : "null")} sorting={sprite.sortingLayerName}:{sprite.sortingOrder}";
             }
 
             foreach (ParticleSystem particles in root.GetComponentsInChildren<ParticleSystem>(true))
             {
-                state[DescribePath(root, particles.transform)] =
-                    $"particles active={particles.gameObject.activeInHierarchy} playing={particles.isPlaying} alive={particles.particleCount}";
+                state["particles|" + DescribePath(root, particles.transform)] =
+                    $"active={particles.gameObject.activeInHierarchy} playing={particles.isPlaying} alive={particles.particleCount}";
             }
 
             foreach (Animator animator in root.GetComponentsInChildren<Animator>(true))
             {
-                AnimatorClipInfo[] clips = animator.GetCurrentAnimatorClipInfo(0);
-                string clip = clips.Length > 0 && clips[0].clip != null ? clips[0].clip.name : "null";
-                AnimatorStateInfo info = animator.GetCurrentAnimatorStateInfo(0);
-                state[DescribePath(root, animator.transform)] =
-                    $"animator enabled={animator.enabled} active={animator.gameObject.activeInHierarchy} clip={clip} normalized={info.normalizedTime:0.00} speed={animator.speed:0.00}";
+                string clip = DescribeClip(animator);
+                string playback = string.Empty;
+                if (includePlayback)
+                {
+                    AnimatorStateInfo info = animator.GetCurrentAnimatorStateInfo(0);
+                    playback = $" normalized={info.normalizedTime:0.00}";
+                }
+                state["anim|" + DescribePath(root, animator.transform)] =
+                    $"enabled={animator.enabled} active={animator.gameObject.activeInHierarchy} clip={clip}{playback} speed={animator.speed:0.00}";
             }
 
             return state;
+        }
+
+        /// <summary>The clip currently playing on an animator, or "null" when no state is active.</summary>
+        internal static string DescribeClip(Animator animator)
+        {
+            if (animator == null) return "missing";
+            AnimatorClipInfo[] clips = animator.GetCurrentAnimatorClipInfo(0);
+            return clips.Length > 0 && clips[0].clip != null ? clips[0].clip.name : "null";
         }
 
         /// <summary>Everything that could draw right now, on one line, for a one-shot dump.</summary>
         internal static string Describe(Transform root)
         {
             if (root == null) return "none";
-            Dictionary<string, string> state = Capture(root);
+            Dictionary<string, string> state = Capture(root, true);
             StringBuilder builder = new StringBuilder();
             builder.Append($"active={root.gameObject.activeInHierarchy} ");
             foreach (KeyValuePair<string, string> entry in state)

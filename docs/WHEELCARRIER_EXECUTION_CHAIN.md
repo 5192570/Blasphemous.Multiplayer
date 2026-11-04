@@ -531,3 +531,27 @@ inconsistent.
 
 `OnApplicationFocus` and `OnApplicationPause` log every transition together with the configured and
 applied values, so a log shows both whether the client kept running and whether Unity still paused.
+
+### 11.1 The game resets the property after we set it
+
+Binding the value early is not enough: vanilla Blasphemous overwrites it unconditionally, twice.
+
+```text
+Gameplay.UI.Others.MenuLogic/Landing.cs:41-45
+    if (Application.runInBackground) Debug.LogWarning("Run in background was true in landing! Correcting.");
+    Application.runInBackground = false;
+
+Gameplay.UI.Others.MenuLogic/NewMainMenu.cs:168-172
+    if (Application.runInBackground) Debug.LogWarning("Run in background was true! Correcting.");
+    Application.runInBackground = false;
+```
+
+The second one runs when the main menu level loads, seconds after plugin start, and the test log catches
+it in the act — `[Warning: Unity Log] Run in background was true! Correcting.` — immediately before
+every later focus loss is logged with `runInBackground=False`.
+
+`Main.Update()` therefore compares the property against the configured value and re-applies it, logging
+the external change once per correction (capped, so a misbehaving build cannot flood the stream). The
+same re-apply runs when focus is regained, so a client that was paused while the property was false is
+put back on the configured value. Nothing is force-resumed and no game system is touched: only the
+Unity property is written, exactly as the vanilla code itself does.

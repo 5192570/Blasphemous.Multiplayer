@@ -491,3 +491,22 @@ It changes nothing: no renderer, animator or active state is touched, and the wa
 own (diagnostic window, not a recovery path). The output answers the three open questions directly —
 whether the residual is the enemy, the clone or a third object; when exactly each stops drawing; and
 whether the ~5 s clone lifetime overlaps it.
+
+---
+
+## 11. Testing aid: `runInBackground`
+
+Two-client tests switch focus between windows, and Unity pauses an unfocused window, so the client
+that is not in front stops updating and its diagnostics back up (visible as the queue drops in the
+merged stream). The mod config gains `runInBackground` (default `false`, so vanilla behaviour is
+unchanged):
+
+```json
+{ "runInBackground": true }
+```
+
+`Main.ApplyBackgroundExecution` sets `Application.runInBackground` immediately after the config is
+loaded during plugin start, and logs the configured and applied value. `OnApplicationFocus` and
+`OnApplicationPause` log every transition, so a test log shows whether the client kept running while
+the other window was in front. Keeping the game simulating in the background is opt-in because it
+also keeps audio and AI running.

@@ -340,11 +340,8 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
             return;
         }
 
-        SpriteRenderer renderer = avatar.GetComponent<SpriteRenderer>();
-        if (renderer == null) return;
-
-        bool wasEnabled = renderer.enabled;
-        renderer.enabled = false;
+        bool wasEnabled = avatar.PresentationVisible;
+        avatar.SetPresentationVisible(false);
         _hiddenExecutionAvatar = ownerName;
         SharedDiagnosticLogger.Info($"[PenitentVisibilityDiag] Hiding executor avatar owner={ownerName}, wasEnabled={wasEnabled}, enemyInstance={_wheelCarrier?.GetInstanceID()}, time={Time.realtimeSinceStartup:0.000}");
     }
@@ -364,10 +361,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
             return;
         }
 
-        SpriteRenderer renderer = avatar.GetComponent<SpriteRenderer>();
-        if (renderer == null) return;
-
-        renderer.enabled = true;
+        avatar.SetPresentationVisible(true);
         SharedDiagnosticLogger.Info($"[PenitentVisibilityDiag] Restored executor avatar owner={ownerName}, reason={reason}, time={Time.realtimeSinceStartup:0.000}");
     }
 

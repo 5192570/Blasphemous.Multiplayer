@@ -15,11 +15,28 @@ namespace Blasphemous.Multiplayer.Client.Players
         private bool playerDead = false;
 
         private SpriteRenderer CharacterRenderer { get; set; }
+
+        // Set while the player is running a finisher: vanilla hides the executing player, so the
+        // avatar body has to stay hidden even if a skin update would otherwise show it again.
+        private bool presentationHidden;
         private Animator CharacterAnim { get; set; }
 
         public OtherPlayerAttackScript OtherPlayerAttack { get; private set; }
 
         public bool IsFacingRight => !CharacterRenderer.flipX;
+
+        public bool PresentationVisible => CharacterRenderer != null && CharacterRenderer.enabled;
+
+        /// <summary>
+        /// Hides or shows the avatar body without touching its animation, position or input. Only
+        /// the renderer changes, which is all vanilla's Interactable.ShowPlayer does to the real
+        /// Penitent during an execution.
+        /// </summary>
+        public void SetPresentationVisible(bool visible)
+        {
+            presentationHidden = !visible;
+            if (CharacterRenderer != null) CharacterRenderer.enabled = visible;
+        }
 
         // Adds necessary components & initializes them
         public void SetupPlayer(PlayerStatus status)
@@ -107,7 +124,7 @@ namespace Blasphemous.Multiplayer.Client.Players
 
         public void ApplySkinTexture()
         {
-            CharacterRenderer.enabled = true;
+            CharacterRenderer.enabled = !presentationHidden;
             CharacterRenderer.material.SetTexture("_PaletteTex", playerStatus.SkinTexture);
         }
 

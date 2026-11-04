@@ -56,6 +56,15 @@ public sealed class FoolEnemySyncHandler : EnemySyncHandler
         _fool.entityCurrentState = EntityStates.Hurt;
     }
 
+    internal override void ApplyAuthoritativeDamageReaction(bool dead, byte orientation)
+    {
+        if (_fool == null) return;
+        _fool.SetOrientation((EntityOrientation)orientation);
+        if (_fool.Behaviour == null) return;
+        if (dead) _fool.Behaviour.Death();
+        else _fool.Behaviour.Damage();
+    }
+
     internal override void ApplyDeath()
     {
         if (_fool != null && _fool.Behaviour != null) _fool.Behaviour.Death();

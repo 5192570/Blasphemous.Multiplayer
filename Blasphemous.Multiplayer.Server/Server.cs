@@ -132,8 +132,11 @@ public class Server
                 case NetworkType.Ping:          ReceivePing(e.ip, data); break;
                 case NetworkType.WorldReset:   receivePlayerWorldReset(e.ip, data); break;
                 case NetworkType.EnemyDeath:   receivePlayerEnemyDeath(e.ip, data); break;
-                case NetworkType.EnemyHealth:  receivePlayerEnemyHealth(e.ip, data); break;
+                case NetworkType.EnemyHealth:  Logger.Warn("Ignored legacy non-authoritative enemy health packet"); break;
                 case NetworkType.EnemyHit:     receivePlayerEnemyHit(e.ip, data); break;
+                case NetworkType.EnemyDamageReport: receivePlayerEnemyDamageReport(e.ip, data); break;
+                case NetworkType.EnemyStateReport: receivePlayerEnemyStateReport(e.ip, data); break;
+                case NetworkType.EnemyExecutionStarted: receivePlayerEnemyExecutionStarted(e.ip, data); break;
                 case NetworkType.EnemyPosition: receivePlayerEnemyPosition(e.ip, data); break;
                 case NetworkType.PlayerImpact: receivePlayerImpact(e.ip, data); break;
                 case NetworkType.EnemyAttack: receivePlayerEnemyAttack(e.ip, data); break;
@@ -874,38 +877,131 @@ public class Server
 
     private void receivePlayerEnemyDeath(string playerIp, byte[] data)
     {
-        if (data == null || data.Length == 0)
-            return;
-
+        if (data == null || data.Length == 0) return;
         try
         {
-            string sceneName;
+            string sceneName; long epoch;
             using (MemoryStream stream = new MemoryStream(data))
             using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
             {
-                sceneName = reader.ReadString();
-                string spawnPointId = reader.ReadString();
-                int generation = reader.ReadInt32();
-                if (stream.Position != stream.Length || string.IsNullOrEmpty(spawnPointId) || generation < 0)
-                    return;
+                sceneName = reader.ReadString(); string spawnPointId = reader.ReadString();
+                int generation = reader.ReadInt32(); epoch = reader.ReadInt64(); long revision = reader.ReadInt64();
+                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 || revision < 0) return;
+            }
+            PlayerInfo current = getCurrentPlayer(playerIp);
+            if (current == null || current.sceneName != sceneName || !_sceneAuthority.IsHost(playerIp, sceneName, epoch))
+            {
+                Logger.Warn($"Rejected enemy death from non-authority or stale epoch: player={current?.name}, scene={sceneName}, epoch={epoch}");
+                return;
+            }
+            // Host-committed deaths are world state and must reach players in every scene.
+            foreach (string ip in connectedPlayers.Keys)
+                if (playerIp != ip) Send(ip, data, NetworkType.EnemyDeath);
+        }
+        catch (Exception ex) { Logger.Warn($"Ignored malformed enemy death packet: {ex.GetType().Name}: {ex.Message}"); }
+    }
+
+    // A follower reports the resolved local hit; the server routes it only to the assigned scene host.
+    private void receivePlayerEnemyDamageReport(string playerIp, byte[] data)
+    {
+        if (data == null || data.Length == 0) return;
+        try
+        {
+            string sceneName; long epoch; long observedRevision; string spawnPointId; string hitId; int generation; float damage; byte orientation;
+            using (MemoryStream stream = new MemoryStream(data))
+            using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
+            {
+                sceneName = reader.ReadString(); spawnPointId = reader.ReadString(); generation = reader.ReadInt32();
+                epoch = reader.ReadInt64(); observedRevision = reader.ReadInt64(); hitId = reader.ReadString(); damage = reader.ReadSingle(); reader.ReadString(); byte damageType = reader.ReadByte(); orientation = reader.ReadByte();
+                if (damageType > 5) return;
+                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
+                    generation < 0 || epoch < 0 || observedRevision < 0 || string.IsNullOrEmpty(hitId) || damage <= 0f || float.IsNaN(damage) ||
+                    float.IsInfinity(damage) || orientation > 1) return;
+            }
+            PlayerInfo sender = getCurrentPlayer(playerIp);
+            if (sender == null || sender.sceneName != sceneName || !_sceneAuthority.TryGetHost(sceneName, out string hostIp, out long currentEpoch) || currentEpoch != epoch)
+            {
+                Logger.Warn($"Rejected enemy damage report from wrong scene or stale epoch: player={sender?.name}, scene={sceneName}, epoch={epoch}");
+                return;
+            }
+            if (hostIp == playerIp) return;
+            List<byte> routed = addPlayerNameToData(sender.name);
+            routed.AddRange(data);
+            Send(hostIp, routed.ToArray(), NetworkType.EnemyDamageReport);
+        }
+        catch (Exception ex) { Logger.Warn($"Ignored malformed enemy damage report: {ex.GetType().Name}: {ex.Message}"); }
+    }
+    // Follower WheelCarrier state transitions are routed only to the assigned scene host.
+    private void receivePlayerEnemyStateReport(string playerIp, byte[] data)
+    {
+        if (data == null || data.Length == 0) return;
+        try
+        {
+            string sceneName; string spawnPointId; int generation; long epoch; long observedRevision; byte state; byte orientation;
+            using (MemoryStream stream = new MemoryStream(data))
+            using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
+            {
+                sceneName = reader.ReadString(); spawnPointId = reader.ReadString();
+                generation = reader.ReadInt32(); epoch = reader.ReadInt64(); observedRevision = reader.ReadInt64();
+                state = reader.ReadByte(); orientation = reader.ReadByte();
+                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
+                    generation < 0 || epoch < 0 || observedRevision < 0 || state > 2 || orientation > 1) return;
             }
 
-            PlayerInfo current = getCurrentPlayer(playerIp);
-            if (current == null || string.IsNullOrEmpty(sceneName) || current.sceneName != sceneName)
+            PlayerInfo sender = getCurrentPlayer(playerIp);
+            if (sender == null || sender.sceneName != sceneName ||
+                !_sceneAuthority.TryGetHost(sceneName, out string hostIp, out long currentEpoch) || currentEpoch != epoch)
+            {
+                Logger.Warn($"Rejected WheelCarrier state report from wrong scene or stale epoch: player={sender?.name}, scene={sceneName}, epoch={epoch}");
                 return;
+            }
+            if (hostIp == playerIp) return;
+            List<byte> routed = addPlayerNameToData(sender.name);
+            routed.AddRange(data);
+            Send(hostIp, routed.ToArray(), NetworkType.EnemyStateReport);
+        }
+        catch (Exception ex) { Logger.Warn($"Ignored malformed WheelCarrier state report: {ex.GetType().Name}: {ex.Message}"); }
+    }
 
-            // Enemy deaths are session-wide world state, not scene-local player state.
-            // Peers in other scenes retain the event and reconcile it when they enter.
+    // A player who consumes a WheelCarrier execution tells every other player in the room.
+    // This is presentation only: the authoritative death still travels through EnemyDeath.
+    private void receivePlayerEnemyExecutionStarted(string playerIp, byte[] data)
+    {
+        if (data == null || data.Length == 0) return;
+        try
+        {
+            string sceneName; string spawnPointId; int generation; long epoch; byte side;
+            using (MemoryStream stream = new MemoryStream(data))
+            using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
+            {
+                sceneName = reader.ReadString(); spawnPointId = reader.ReadString();
+                generation = reader.ReadInt32(); epoch = reader.ReadInt64(); side = reader.ReadByte();
+                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
+                    generation < 0 || epoch < 0 || side > 2) return;
+            }
+
+            PlayerInfo sender = getCurrentPlayer(playerIp);
+            if (sender == null || sender.sceneName != sceneName ||
+                !_sceneAuthority.TryGetHost(sceneName, out string hostIp, out long currentEpoch) || currentEpoch != epoch)
+            {
+                Logger.Warn($"Rejected WheelCarrier execution from wrong scene or stale epoch: player={sender?.name}, scene={sceneName}, epoch={epoch}");
+                return;
+            }
+
+            // Either role can execute, so this is not authority filtered; it only has to
+            // reach the other players who are in the same room and can see the enemy.
+            List<byte> routed = addPlayerNameToData(sender.name);
+            routed.AddRange(data);
+            byte[] packet = routed.ToArray();
             foreach (string ip in connectedPlayers.Keys)
             {
-                if (playerIp != ip)
-                    Send(ip, data, NetworkType.EnemyDeath);
+                if (ip == playerIp) continue;
+                PlayerInfo other = connectedPlayers[ip];
+                if (other == null || other.sceneName != sceneName) continue;
+                Send(ip, packet, NetworkType.EnemyExecutionStarted);
             }
         }
-        catch (Exception ex)
-        {
-            Logger.Warn($"Ignored malformed enemy death packet: {ex.GetType().Name}: {ex.Message}");
-        }
+        catch (Exception ex) { Logger.Warn($"Ignored malformed WheelCarrier execution packet: {ex.GetType().Name}: {ex.Message}"); }
     }
 
     // Shared enemy health delta
@@ -950,19 +1046,26 @@ public class Server
     {
         try
         {
-            string sceneName;
+            string sceneName; long epoch;
             using (MemoryStream stream = new MemoryStream(data))
             using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
             {
                 sceneName = reader.ReadString(); string spawnPointId = reader.ReadString();
-                int generation = reader.ReadInt32(); byte orientation = reader.ReadByte();
-                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || orientation > 1) return;
+                int generation = reader.ReadInt32(); epoch = reader.ReadInt64(); long revision = reader.ReadInt64(); string hitSourcePlayerName = reader.ReadString(); byte damageType = reader.ReadByte(); byte orientation = reader.ReadByte();
+                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
+                    generation < 0 || epoch < 0 || revision < 0 || string.IsNullOrEmpty(hitSourcePlayerName) || damageType > 5 || orientation > 1) return;
             }
-            PlayerInfo current = getCurrentPlayer(playerIp);
-            if (current == null || current.sceneName != sceneName) return;
+            PlayerInfo sender = getCurrentPlayer(playerIp);
+            if (sender == null || sender.sceneName != sceneName || !_sceneAuthority.IsHost(playerIp, sceneName, epoch))
+            {
+                Logger.Warn($"Rejected enemy hit cue from non-authority or stale epoch: player={sender?.name}, scene={sceneName}, epoch={epoch}");
+                return;
+            }
+            List<byte> routed = addPlayerNameToData(sender.name);
+            routed.AddRange(data);
             foreach (string ip in connectedPlayers.Keys)
-                if (playerIp != ip && current.isInSameScene(connectedPlayers[ip]) && connectedPlayers[ip].sceneName == sceneName)
-                    Send(ip, data, NetworkType.EnemyHit);
+                if (playerIp != ip && connectedPlayers[ip] != null && connectedPlayers[ip].sceneName == sceneName)
+                    Send(ip, routed.ToArray(), NetworkType.EnemyHit);
         }
         catch (Exception ex) { Logger.Warn($"Ignored malformed enemy hit packet: {ex.GetType().Name}: {ex.Message}"); }
     }
@@ -977,12 +1080,12 @@ public class Server
             using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
             {
                 sceneName = reader.ReadString(); string spawnPointId = reader.ReadString();
-                int generation = reader.ReadInt32(); epoch = reader.ReadInt64();
+                int generation = reader.ReadInt32(); epoch = reader.ReadInt64(); long revision = reader.ReadInt64();
                 float x = reader.ReadSingle(); float y = reader.ReadSingle(); float z = reader.ReadSingle();
-                byte orientation = reader.ReadByte(); byte state = reader.ReadByte(); bool walking = reader.ReadBoolean();
+                byte orientation = reader.ReadByte(); byte state = reader.ReadByte(); byte specialState = reader.ReadByte(); bool walking = reader.ReadBoolean();
                 float currentHealth = reader.ReadSingle();
-                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 ||
-                    orientation > 1 || state > 4 || currentHealth <= 0f || float.IsNaN(currentHealth) || float.IsInfinity(currentHealth) ||
+                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 || revision < 0 ||
+                    orientation > 1 || state > 4 || specialState > 2 || currentHealth <= 0f || float.IsNaN(currentHealth) || float.IsInfinity(currentHealth) ||
                     float.IsNaN(x) || float.IsInfinity(x) || float.IsNaN(y) || float.IsInfinity(y) || float.IsNaN(z) || float.IsInfinity(z)) return;
             }
             PlayerInfo current = getCurrentPlayer(playerIp);
@@ -1129,10 +1232,10 @@ public class Server
                 sceneName = reader.ReadString();
                 string spawnPointId = reader.ReadString();
                 int generation = reader.ReadInt32();
-                epoch = reader.ReadInt64();
+                epoch = reader.ReadInt64(); long revision = reader.ReadInt64();
                 byte orientation = reader.ReadByte();
                 if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) ||
-                    string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 || orientation > 1) return;
+                    string.IsNullOrEmpty(spawnPointId) || generation < 0 || epoch < 0 || revision < 0 || orientation > 1) return;
             }
 
             PlayerInfo sender = getCurrentPlayer(playerIp);

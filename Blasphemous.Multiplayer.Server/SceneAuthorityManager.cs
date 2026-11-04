@@ -125,6 +125,22 @@ internal sealed class SceneAuthorityManager
         return snapshots;
     }
 
+    internal bool TryGetHost(string sceneName, out string hostIp, out long epoch)
+    {
+        lock (_lock)
+        {
+            if (_scenes.TryGetValue(sceneName, out SceneState state) && !string.IsNullOrEmpty(state.HostIp))
+            {
+                hostIp = state.HostIp;
+                epoch = state.Epoch;
+                return true;
+            }
+        }
+        hostIp = null;
+        epoch = -1;
+        return false;
+    }
+
     internal bool IsHost(string playerIp, string sceneName, long epoch)
     {
         lock (_lock)

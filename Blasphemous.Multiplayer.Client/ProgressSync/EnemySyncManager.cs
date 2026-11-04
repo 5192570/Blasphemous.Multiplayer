@@ -11,11 +11,13 @@ internal static class EnemySyncManager
     {
         Entity.Started -= OnEntityStarted;
         Entity.Started += OnEntityStarted;
+        EnemyTierProbe.Initialize();
     }
 
     internal static void AttachExisting()
     {
         foreach (Entity entity in Entity.LivingEntities) Attach(entity);
+        EnemyTierProbe.DescribeExisting();
     }
 
     private static void OnEntityStarted(Entity entity) => Attach(entity);

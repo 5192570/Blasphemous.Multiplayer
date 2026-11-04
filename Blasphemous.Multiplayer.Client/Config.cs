@@ -10,6 +10,7 @@
         public bool showOtherTeamOnMap;
         public bool enablePvP;
         public bool enableFriendlyFire;
+        public bool runInBackground;
         public SyncSettings syncSettings;
 
         // Default config
@@ -22,6 +23,7 @@
             showOtherTeamOnMap = false;
             enablePvP = true;
             enableFriendlyFire = false;
+            runInBackground = false;
             syncSettings = new SyncSettings();
         }
 

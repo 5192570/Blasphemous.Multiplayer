@@ -629,3 +629,51 @@ enemy's own `#Constitution/Sprite`, the clone's `Interactable Animation` - and b
 animator state while the renderer that decides whether anything is drawn stayed invisible. Fixed:
 the component kind is part of the key, and playback detail (`normalized`) is only included in the
 one-shot dumps, not in the diff, so clip-time churn no longer buries the transitions.
+
+---
+
+## 13. Clone presentation fixes (implemented)
+
+Three of the four items in §8.1 are fixed here, each on evidence from the probe log.
+
+### 13.1 One body, not two
+
+`Execution.OnUse` starts exactly one animator - the serialized `Interactable.interactorAnimator`:
+
+```csharp
+interactableAnimator.gameObject.SetActive(false);
+ShowPlayer(false);
+ExecutedEntity.KillEntity();
+interactorAnimator.SetTrigger("USED");
+```
+
+The clone was triggered on *every* animator declaring `USED`, and the prefab carries two interactor
+hierarchies, so both drew the victim (`YellowCartwheel_execution_N` on the left and right
+`RecolorSprite`, same `Player:5` slot, step for step). `TriggerExecutionClip` now reads
+`AccessTools.Field(typeof(Tools.Level.Interactable), "interactorAnimator")`, triggers only that, and
+falls back to the old behaviour with a warning if the field is ever unreadable.
+
+### 13.2 The prompt art stops drawing
+
+`Interactable Animation` plays `WheelCarrier_stun` - the victim's executionable animation - for as
+long as the clone lives. In the last run it was still at `normalized=4.16` in the clone's final dump
+at 78.098, five seconds after the enemy died. Vanilla hides it in the same `OnUse` above, so the clone
+now does too (`interactableAnimator.gameObject.SetActive(false)`).
+
+The clone also disables `InputNotifier`. It is independent of `Execution.enabled` - its `Start`
+creates a button icon and it reacts to the global input lock events - so a clone that carries one
+keeps a prompt alive that nothing can ever answer.
+
+### 13.3 The clone stops when its animation stops
+
+The clip ends by leaving its state: the interactors reported `clip=null` at 76.413, while the clone
+survived to 78.098 because `TickExecutionPresentation` waits for `normalizedTime >= 1`, which the
+state never reports after it is left. The tick now retires the clone the moment the state is gone,
+but only once a clip has actually been seen, so an unconsumed trigger cannot retire it on the first
+frame. The `normalizedTime` check stays as a second exit.
+
+### 13.4 Not done here
+
+Hiding the executing player's remote avatar for the finisher is still outstanding: it needs the
+owner's avatar handle and a restore path for every way the clone can end. It is the one remaining
+piece of §8.1 and is deliberately kept out of this commit.

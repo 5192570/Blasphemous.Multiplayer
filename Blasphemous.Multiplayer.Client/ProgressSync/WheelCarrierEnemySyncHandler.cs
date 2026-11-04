@@ -76,7 +76,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     private GameObject _executionPresentation;
     private Animator _executionPresentationAnimator;
     private float _executionPresentationStartedAt;
-    private bool _executionClipEndedLogged;
+    private bool _executionClipStarted;
     private static bool _executionPrefabShapeLogged;
 
     // Diagnostics only: after a death we watch both hierarchies for a bounded window and log
@@ -355,6 +355,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         {
             _executionPresentation = (GameObject)Instantiate(prefab, _wheelCarrier.transform.position, Quaternion.identity);
             _executionPresentationStartedAt = Time.unscaledTime;
+            _executionClipStarted = false;
 
             Execution interactable = _executionPresentation.GetComponentInChildren<Execution>(true);
             if (interactable != null)
@@ -364,6 +365,14 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
                 interactable.ExecutedEntity = _wheelCarrier;
                 interactable.ObjectOrientation = (EntityOrientation)side;
                 interactable.enabled = false;
+            }
+
+            // InputNotifier is independent of Execution.enabled: its Start instantiates a button
+            // icon and it reacts to the global input lock events, so a clone that carries one keeps
+            // a prompt alive that nothing will ever answer.
+            foreach (Tools.UI.InputNotifier notifier in _executionPresentation.GetComponentsInChildren<Tools.UI.InputNotifier>(true))
+            {
+                if (notifier != null) notifier.enabled = false;
             }
 
             ExecutionAnimationEvents[] effects = _executionPresentation.GetComponentsInChildren<ExecutionAnimationEvents>(true);
@@ -386,8 +395,16 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
             if (_wheelCarrier.SpriteRenderer != null) _wheelCarrier.SpriteRenderer.enabled = false;
             if (_wheelCarrier.Attack != null) _wheelCarrier.Attack.gameObject.SetActive(false);
 
-            _executionPresentationAnimator = TriggerExecutionClip(_executionPresentation);
-            SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Execution presentation started enemyInstance={_wheelCarrier.GetInstanceID()}, owner={ownerName}, side={side}, animator={(_executionPresentationAnimator != null ? _executionPresentationAnimator.name : "<none>")}, interactable={(interactable != null)}, effects={effects.Length}, time={Time.realtimeSinceStartup:0.000}");
+            Animator interactor = ReadInteractableAnimator(interactable, "interactorAnimator");
+            Animator prompt = ReadInteractableAnimator(interactable, "interactableAnimator");
+
+            // Execution.OnUse hides the prompt art before it starts the clip. Leaving it visible is
+            // what kept the victim's executionable/stun animation on screen for the whole clone
+            // lifetime, i.e. the enemy still looked finishable five seconds after it died.
+            if (prompt != null && prompt.gameObject.activeSelf) prompt.gameObject.SetActive(false);
+
+            _executionPresentationAnimator = TriggerExecutionClip(_executionPresentation, interactor);
+            SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Execution presentation started enemyInstance={_wheelCarrier.GetInstanceID()}, owner={ownerName}, side={side}, animator={(_executionPresentationAnimator != null ? _executionPresentationAnimator.name : "<none>")}, interactor={(interactor != null ? interactor.name : "<none>")}, prompt={(prompt != null ? prompt.name : "<none>")}, interactable={(interactable != null)}, effects={effects.Length}, time={Time.realtimeSinceStartup:0.000}");
         }
         catch (Exception ex)
         {
@@ -397,11 +414,24 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     }
 
     /// <summary>
-    /// Plays the finisher clip on every animator in the clone that declares the same trigger the
-    /// owner's Execution.OnUse uses. Returns the animator that was started, if any.
+    /// Plays the finisher clip exactly like Execution.OnUse does: one animator, the serialized
+    /// Interactable.interactorAnimator.
+    ///
+    /// The prefab carries two interactor hierarchies, and triggering every animator that declares
+    /// USED made both of them draw the victim - the same YellowCartwheel_execution_N frames twice,
+    /// in the same sorting slot, which is what "effects=2" was counting.
     /// </summary>
-    private static Animator TriggerExecutionClip(GameObject clone)
+    private static Animator TriggerExecutionClip(GameObject clone, Animator interactor)
     {
+        if (interactor != null)
+        {
+            interactor.SetTrigger("USED");
+            return interactor;
+        }
+
+        // The field is protected on the vanilla base type; if reflection ever misses it, fall back
+        // to the old behaviour rather than presenting nothing.
+        SharedDiagnosticLogger.Warn("[WheelCarrierExecutionDiag] interactorAnimator not readable; falling back to every animator with USED");
         Animator started = null;
         Animator[] animators = clone.GetComponentsInChildren<Animator>(true);
         foreach (Animator animator in animators)
@@ -411,6 +441,26 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
             if (started == null) started = animator;
         }
         return started;
+    }
+
+    /// <summary>
+    /// Reads one of Interactable's serialized animator fields (interactorAnimator /
+    /// interactableAnimator). They are protected on the vanilla base type, so this is the only way
+    /// to reach the animator the game itself would have used.
+    /// </summary>
+    private static Animator ReadInteractableAnimator(Execution interactable, string fieldName)
+    {
+        if (interactable == null) return null;
+        try
+        {
+            System.Reflection.FieldInfo field = HarmonyLib.AccessTools.Field(typeof(Tools.Level.Interactable), fieldName);
+            return field != null ? field.GetValue(interactable) as Animator : null;
+        }
+        catch (Exception ex)
+        {
+            SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Could not read {fieldName}: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
     }
 
     private static bool HasTriggerParameter(Animator animator, string name)
@@ -471,13 +521,19 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
 
         if (_executionPresentationAnimator == null) return;
 
-        // The interactor animator leaves its USED state before the clone is retired, and the clone
-        // keeps drawing its prompt art in the meantime. Record that tail: it is the window where
-        // only leftover executionable art is on screen.
-        if (!_executionClipEndedLogged && WheelCarrierVisualProbe.DescribeClip(_executionPresentationAnimator) == "null")
+        // The clip ends by leaving its state (clip == null) rather than by reporting a finished
+        // normalizedTime, which is why the clone used to linger ~1.7s past its own animation. End it
+        // the moment the state is gone - but only after the state was actually entered, so a trigger
+        // that has not been consumed yet cannot retire the clone on the first frame.
+        string clip = WheelCarrierVisualProbe.DescribeClip(_executionPresentationAnimator);
+        if (!_executionClipStarted)
         {
-            _executionClipEndedLogged = true;
-            SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Execution clip ended, clone still drawing enemyInstance={_wheelCarrier?.GetInstanceID()}, age={age:0.000}, clip=null, cloneRenderers={WheelCarrierVisualProbe.Describe(_executionPresentation.transform)}, time={Time.realtimeSinceStartup:0.000}");
+            if (clip != "null") _executionClipStarted = true;
+        }
+        else if (clip == "null")
+        {
+            DestroyExecutionPresentation("execution clip ended");
+            return;
         }
 
         AnimatorStateInfo info = _executionPresentationAnimator.GetCurrentAnimatorStateInfo(0);
@@ -494,7 +550,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         Destroy(_executionPresentation);
         _executionPresentation = null;
         _executionPresentationAnimator = null;
-        _executionClipEndedLogged = false;
+        _executionClipStarted = false;
 
         // Only a survivor needs its sprite back; after a completed execution the enemy is dead
         // and has already been hidden by ApplyDeath.

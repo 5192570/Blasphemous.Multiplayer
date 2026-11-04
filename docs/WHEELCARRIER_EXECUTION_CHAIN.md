@@ -232,7 +232,7 @@ prefab: keep the animator, drop the interaction and the player coupling.
 
 ---
 
-## 6. Smallest presentation-only path (design, not implemented)
+## 6. Smallest presentation-only path (implemented)
 
 The prefab is self-contained enough to be replayed if we disable exactly the parts that reach
 for the local Penitent. Sketch:
@@ -275,8 +275,8 @@ decompilation):
 | Signal | Needed for | Status |
 | --- | --- | --- |
 | `state` 0/1/2 + owner | parry pose, executionable state, state end | exists |
-| authoritative death | removal, and (today) the ordinary death presentation | exists |
-| **execution started** (+ facing/side) | starting the clip on the observer at the same moment as the owner, and *not* playing `DEATH` | **missing** |
+| authoritative death | removal of the enemy | exists |
+| `EnemyExecutionStarted` (scene/spawn/generation/epoch + side) | starting the clip on the observer at the same moment as the owner, and *not* playing `DEATH` | added (`NetworkType.EnemyExecutionStarted = 25`) |
 | owner disconnect / authority change / scene change | dropping the clone with the mirror | exists |
 
 The execution-start event is deliberately separate from the death report: it is *presentation*,
@@ -284,3 +284,36 @@ while the death stays the authoritative commit, and the two must be idempotent i
 (a disconnect between them must leave neither a live clone nor a double kill). Deriving the start
 from "death while mirroring state 2" works for the common case but cannot distinguish a completed
 execution from an interrupted one (`Execution.Damage()` also kills, and correctly plays `DEATH`).
+
+### 6.1 What the implementation does
+
+Owner side: `WheelCarrierExecutionStartPatch` (prefix on `Interactable.Use`) reports the moment the
+prompt is consumed. `Use()` is patched instead of `Execution.OnUse` because `OnUse` is an iterator -
+Harmony patches its `MoveNext`, so a prefix there would fire on every `yield` of the
+`while (!Consumed)` loop. `Use()` runs once, on the frame of the button press, which is also a frame
+before the owner's `KillEntity` packet goes out. The payload carries the side the executing player
+stands on (`Execution.PlayerDirection`), because only the owner can answer that.
+
+Observer side: `ApplyRemoteExecutionStart` instantiates `EntExecution.ExecutionPrefab` at the enemy's
+position, then subtracts everything that reaches for the local player:
+
+| Neutralised | Why |
+| --- | --- |
+| `Execution` component (disabled before `Start` runs) | `OnStart`/`OnUpdate`/`OnUse` bind the local Penitent, block input and call `KillEntity()` |
+| `ExecutionAnimationEvents` (disabled) | local slow motion, camera zoom, rumble, execution sound |
+| `Interactable.OnEventLaunched` (Harmony prefix) | `INTERACTION_START/END` would block the observer's input and pay them fervour |
+| every `Collider2D` in the clone | no sensor, prompt or damage collision with the observer |
+| `StuntBehaviour.OnStateUpdate` (Harmony prefix) | it would call `Alive()` on the real enemy after `StuntTime` and report `state = 0` |
+
+Then `USED` is triggered on every animator in the clone that declares that trigger, the real enemy's
+sprite is hidden (parity with `Execution()`), and the clone is destroyed when its clip reports a
+finished state, with a 20 s leak guard. On the authoritative death the handler skips
+`Behaviour.Death()`/`PlayDeath()` - the owner plays no death clip for a completed execution - and the
+death simply removes the enemy.
+
+If anything is missing (no prefab, no `USED` trigger, an exception while instantiating) the code logs
+a warning and falls back to the previous behaviour, so an observer without a clone still gets the
+ordinary death presentation rather than nothing.
+
+The first clone also logs the prefab's hierarchy once (`Execution prefab shape ...`), which is what
+answers the three asset questions at the end of this section without an editor.

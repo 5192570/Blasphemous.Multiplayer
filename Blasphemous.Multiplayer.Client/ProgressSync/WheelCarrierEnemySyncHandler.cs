@@ -10,6 +10,8 @@ using Gameplay.GameControllers.Enemies.WheelCarrier.Animator;
 using Gameplay.GameControllers.Enemies.WheelCarrier.IA;
 using Gameplay.GameControllers.Combat;
 using Gameplay.GameControllers.Entities;
+using Tools.Level;
+using Tools.Level.Interactables;
 using UnityEngine;
 
 namespace Blasphemous.Multiplayer.Client.ProgressSync;
@@ -51,6 +53,12 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     private const float MirrorUnconfirmedWarning = 10f;
     private const float MirrorCheckInterval = 0.5f;
 
+    // A presentation clone is a cosmetic object; it is never allowed to hold on to the scene.
+    // The clip itself decides when it ends - this is only a leak guard for a clone whose
+    // animator never reports a finished state.
+    private const float ExecutionPresentationMinPlayTime = 0.25f;
+    private const float ExecutionPresentationMaxLifetime = 20f;
+
     private WheelCarrier _wheelCarrier;
     private byte _specialState;
     private bool _applyingRemoteSpecialState;
@@ -64,6 +72,11 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     private bool _mirrorOwnerPresenceKnown;
     private byte _lastLeftLocalState;
     private bool _parryRecoverySuppressionLogged;
+
+    private GameObject _executionPresentation;
+    private Animator _executionPresentationAnimator;
+    private float _executionPresentationStartedAt;
+    private static bool _executionPrefabShapeLogged;
 
     protected override void OnAttach()
     {
@@ -83,6 +96,8 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         _mirrorOwnerPresenceKnown = false;
         _lastLeftLocalState = 0;
         _parryRecoverySuppressionLogged = false;
+        _executionPresentation = null;
+        _executionPresentationAnimator = null;
         // Never "just changed": a freshly attached enemy has no local ownership to protect.
         _specialStateChangedAt = float.NegativeInfinity;
         _lastMirrorConfirmedAt = float.NegativeInfinity;
@@ -129,6 +144,9 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
 
     internal override void OnSyncUpdate()
     {
+        // The clone outlives the mirror (the owner's death lands at the start of the execution
+        // and clears the state), so it has to be ticked before the mirror early-return.
+        TickExecutionPresentation();
         if (!IsMirroringRemoteSpecialState || Time.unscaledTime < _nextMirrorCheck) return;
         _nextMirrorCheck = Time.unscaledTime + MirrorCheckInterval;
 
@@ -267,6 +285,189 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         }
     }
 
+    /// <summary>
+    /// Replays the owner's finisher for a player who is only watching it.
+    ///
+    /// The prefab owns the entire presentation: the executor duplicate that plays the clip, the
+    /// prompt art and the animator that drives both. It also owns a live interaction against
+    /// whichever Penitent is local, so every part of it that reaches for the local player is
+    /// switched off before it can run:
+    ///
+    ///   Execution              - OnStart/OnUpdate/OnUse are what consume the interaction, bind
+    ///                            the local Penitent and call ExecutedEntity.KillEntity(). It is
+    ///                            disabled before Start, so none of that runs.
+    ///   ExecutionAnimationEvents - local camera zoom, level slow motion, rumble and the
+    ///                            execution sound. Disabled, and its `_execution` field (set in
+    ///                            Start) stays null so the guarded entry points no-op.
+    ///   INTERACTION_START/END  - animation events delivered to the disabled Interactable. They
+    ///                            would block the observer's input and pay them fervour; the
+    ///                            Interactable.OnEventLaunched prefix drops them for this clone.
+    ///
+    /// Nothing here commits a death: the authoritative death still arrives from the owner and is
+    /// what removes the enemy.
+    /// </summary>
+    internal void ApplyRemoteExecutionStart(string ownerName, byte side)
+    {
+        if (_wheelCarrier == null || _wheelCarrier.EntExecution == null)
+        {
+            SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Execution presentation skipped: enemy not ready enemyInstance={_wheelCarrier?.GetInstanceID()}, owner={ownerName}");
+            return;
+        }
+
+        if (_executionPresentation != null)
+        {
+            SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Execution already presented enemyInstance={_wheelCarrier.GetInstanceID()}, owner={ownerName}, aliveFor={(Time.unscaledTime - _executionPresentationStartedAt):0.000}, time={Time.realtimeSinceStartup:0.000}");
+            return;
+        }
+
+        GameObject prefab = _wheelCarrier.EntExecution.ExecutionPrefab;
+        if (prefab == null)
+        {
+            SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Execution presentation skipped: EntExecution has no prefab enemyInstance={_wheelCarrier.GetInstanceID()}, owner={ownerName}");
+            return;
+        }
+
+        try
+        {
+            _executionPresentation = (GameObject)Instantiate(prefab, _wheelCarrier.transform.position, Quaternion.identity);
+            _executionPresentationStartedAt = Time.unscaledTime;
+
+            Execution interactable = _executionPresentation.GetComponentInChildren<Execution>(true);
+            if (interactable != null)
+            {
+                // StuntBehaviour.OnStateEnter dereferences ExecutedEntity on the clone's animator,
+                // so it cannot be left null even though the interaction itself never runs.
+                interactable.ExecutedEntity = _wheelCarrier;
+                interactable.ObjectOrientation = (EntityOrientation)side;
+                interactable.enabled = false;
+            }
+
+            ExecutionAnimationEvents[] effects = _executionPresentation.GetComponentsInChildren<ExecutionAnimationEvents>(true);
+            foreach (ExecutionAnimationEvents effect in effects)
+            {
+                if (effect != null) effect.enabled = false;
+            }
+
+            // Pure visuals: no sensor, prompt or damage collider may react to the observer's
+            // Penitent, and the clone's own EnemyDamageArea must never receive a hit.
+            foreach (Collider2D collider in _executionPresentation.GetComponentsInChildren<Collider2D>(true))
+            {
+                if (collider != null) collider.enabled = false;
+            }
+
+            LogExecutionPrefabShapeOnce(_executionPresentation, interactable);
+
+            // The owner's Execution() stops drawing the enemy and hands the visuals to the
+            // prefab; mirror that so the two screens show the same thing.
+            if (_wheelCarrier.SpriteRenderer != null) _wheelCarrier.SpriteRenderer.enabled = false;
+            if (_wheelCarrier.Attack != null) _wheelCarrier.Attack.gameObject.SetActive(false);
+
+            _executionPresentationAnimator = TriggerExecutionClip(_executionPresentation);
+            SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Execution presentation started enemyInstance={_wheelCarrier.GetInstanceID()}, owner={ownerName}, side={side}, animator={(_executionPresentationAnimator != null ? _executionPresentationAnimator.name : "<none>")}, interactable={(interactable != null)}, effects={effects.Length}, time={Time.realtimeSinceStartup:0.000}");
+        }
+        catch (Exception ex)
+        {
+            SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Execution presentation failed enemyInstance={_wheelCarrier?.GetInstanceID()}, owner={ownerName}, error={ex.GetType().Name}: {ex.Message}");
+            DestroyExecutionPresentation("presentation failed");
+        }
+    }
+
+    /// <summary>
+    /// Plays the finisher clip on every animator in the clone that declares the same trigger the
+    /// owner's Execution.OnUse uses. Returns the animator that was started, if any.
+    /// </summary>
+    private static Animator TriggerExecutionClip(GameObject clone)
+    {
+        Animator started = null;
+        Animator[] animators = clone.GetComponentsInChildren<Animator>(true);
+        foreach (Animator animator in animators)
+        {
+            if (animator == null || !HasTriggerParameter(animator, "USED")) continue;
+            animator.SetTrigger("USED");
+            if (started == null) started = animator;
+        }
+        return started;
+    }
+
+    private static bool HasTriggerParameter(Animator animator, string name)
+    {
+        AnimatorControllerParameter[] parameters = animator.parameters;
+        if (parameters == null) return false;
+        foreach (AnimatorControllerParameter parameter in parameters)
+        {
+            if (parameter.type == AnimatorControllerParameterType.Trigger && string.Equals(parameter.name, name, StringComparison.Ordinal))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// One-shot description of what the execution prefab actually contains. The prefab is an
+    /// asset, so its shape cannot be read from the decompiled assemblies; this is what tells us
+    /// whether the clone draws the victim, where the animator events live and how long the clip
+    /// is, without needing an editor.
+    /// </summary>
+    private static void LogExecutionPrefabShapeOnce(GameObject clone, Execution interactable)
+    {
+        if (_executionPrefabShapeLogged || clone == null) return;
+        _executionPrefabShapeLogged = true;
+
+        System.Text.StringBuilder builder = new System.Text.StringBuilder();
+        builder.Append($"[WheelCarrierExecutionDiag] Execution prefab shape root={clone.name}, interactable={(interactable != null)}");
+        Transform[] transforms = clone.GetComponentsInChildren<Transform>(true);
+        int logged = 0;
+        foreach (Transform child in transforms)
+        {
+            if (logged >= 24) { builder.Append(" | ..."); break; }
+            logged++;
+            Component[] components = child.GetComponents<Component>();
+            builder.Append($" | {child.name}[");
+            for (int i = 0; i < components.Length; i++)
+            {
+                if (i > 0) builder.Append(",");
+                builder.Append(components[i] == null ? "null" : components[i].GetType().Name);
+            }
+            builder.Append("]");
+        }
+        SharedDiagnosticLogger.Info(builder.ToString());
+    }
+
+    private void TickExecutionPresentation()
+    {
+        if (_executionPresentation == null) return;
+
+        float age = Time.unscaledTime - _executionPresentationStartedAt;
+        if (age < ExecutionPresentationMinPlayTime) return;
+
+        if (age >= ExecutionPresentationMaxLifetime)
+        {
+            DestroyExecutionPresentation($"lifetime cap {ExecutionPresentationMaxLifetime:0.0}s");
+            return;
+        }
+
+        if (_executionPresentationAnimator == null) return;
+        AnimatorStateInfo info = _executionPresentationAnimator.GetCurrentAnimatorStateInfo(0);
+        if (info.normalizedTime >= 1f) DestroyExecutionPresentation("execution clip finished");
+    }
+
+    private void DestroyExecutionPresentation(string reason)
+    {
+        if (_executionPresentation == null) return;
+
+        float age = Time.unscaledTime - _executionPresentationStartedAt;
+        SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Execution presentation ended enemyInstance={_wheelCarrier?.GetInstanceID()}, reason={reason}, aliveFor={age:0.000}, time={Time.realtimeSinceStartup:0.000}");
+        Destroy(_executionPresentation);
+        _executionPresentation = null;
+        _executionPresentationAnimator = null;
+
+        // Only a survivor needs its sprite back; after a completed execution the enemy is dead
+        // and has already been hidden by ApplyDeath.
+        if (_wheelCarrier != null && _wheelCarrier.SpriteRenderer != null && !_wheelCarrier.Status.Dead)
+            _wheelCarrier.SpriteRenderer.enabled = true;
+    }
+
+    private void OnDestroy() => DestroyExecutionPresentation("sync handler destroyed");
+
     /// <summary>Re-asserts the mirrored presentation after a local hit cleared GotParry.</summary>
     internal void ReassertMirroredSpecialState()
     {
@@ -393,8 +594,23 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     internal override void ApplyDeath()
     {
         if (_wheelCarrier == null) return;
-        if (_wheelCarrier.Behaviour != null) _wheelCarrier.Behaviour.Death();
-        if (_wheelCarrier.Audio != null) _wheelCarrier.Audio.PlayDeath();
+
+        // A completed execution is not a death presentation: the owner's enemy plays no death
+        // clip at all, it is simply destroyed when the finisher ends (KillEntity runs before the
+        // animation starts). Playing Behaviour.Death() here is what showed an ordinary death on
+        // the observer. When a clone is running, hide the enemy and let the clone finish.
+        if (_executionPresentation != null)
+        {
+            if (_wheelCarrier.SpriteRenderer != null) _wheelCarrier.SpriteRenderer.enabled = false;
+            if (_wheelCarrier.Attack != null) _wheelCarrier.Attack.gameObject.SetActive(false);
+            SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Remote death during execution presentation: suppressing native death presentation enemyInstance={_wheelCarrier.GetInstanceID()}, time={Time.realtimeSinceStartup:0.000}");
+        }
+        else
+        {
+            if (_wheelCarrier.Behaviour != null) _wheelCarrier.Behaviour.Death();
+            if (_wheelCarrier.Audio != null) _wheelCarrier.Audio.PlayDeath();
+        }
+
         ClearSpecialState("remote death");
     }
 
@@ -462,6 +678,9 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     private void RestoreAlivePresentation()
     {
         if (_wheelCarrier == null || _wheelCarrier.Behaviour == null) return;
+
+        // Any clone belongs to the state that is ending; the owner never leaves one behind.
+        DestroyExecutionPresentation("mirror restored");
 
         _wheelCarrier.Behaviour.GotParry = false;
         // Undo the state-2 mirror parity alongside the rest of the restoration. Native
@@ -649,5 +868,59 @@ internal static class WheelCarrierDamageSyncPatch
         if (__instance.Behaviour.GotParry) return;
         if (handler.SpecialState == 1)
             handler.NotifyNativeSpecialState(0);
+    }
+}
+
+/// <summary>
+/// Announces that the local player consumed an execution interaction.
+///
+/// Use() is patched rather than Execution.OnUse because OnUse is an iterator: Harmony patches
+/// its MoveNext, so a prefix there fires on every yield - hundreds of times for the
+/// "while (!Consumed)" loop. Use() runs exactly once per interaction, on the frame the button is
+/// pressed, which is also a frame before the owner's KillEntity goes out.
+/// </summary>
+[HarmonyLib.HarmonyPatch(typeof(Interactable), nameof(Interactable.Use))]
+internal static class WheelCarrierExecutionStartPatch
+{
+    [HarmonyLib.HarmonyPrefix]
+    private static void Prefix(Interactable __instance)
+    {
+        if (!(__instance is Execution execution) || execution.ExecutedEntity == null) return;
+        if (!(execution.ExecutedEntity is WheelCarrier wheelCarrier)) return;
+        EnemyDeathSyncManager.ReportWheelCarrierExecutionStarted(wheelCarrier, execution);
+    }
+}
+
+/// <summary>
+/// The execution prefab raises INTERACTION_START / INTERACTION_END through its animator, which
+/// Interactable turns into an input blocker and, at the end, a fervour bonus for the local
+/// Penitent. A presentation clone has its Execution component disabled for exactly that reason,
+/// so those events must be dropped instead of being applied to the observer.
+/// </summary>
+[HarmonyLib.HarmonyPatch(typeof(Interactable), "OnEventLaunched")]
+internal static class ExecutionPresentationEventPatch
+{
+    [HarmonyLib.HarmonyPrefix]
+    private static bool Prefix(Interactable __instance)
+    {
+        return !(__instance is Execution execution) || execution.enabled;
+    }
+}
+
+/// <summary>
+/// StuntBehaviour is the execution prefab's own expiry: StuntTime after the prompt appears it
+/// calls Alive() on the executed enemy and destroys the prefab. On a presentation clone that
+/// would resurrect the mirrored enemy and report a bogus "state ended" to the authority, and the
+/// clone has its own lifetime, so the expiry is skipped for clones (their Execution is disabled).
+/// </summary>
+[HarmonyLib.HarmonyPatch(typeof(StuntBehaviour), nameof(StuntBehaviour.OnStateUpdate))]
+internal static class ExecutionPresentationStuntPatch
+{
+    [HarmonyLib.HarmonyPrefix]
+    private static bool Prefix(Animator animator)
+    {
+        if (animator == null) return true;
+        Execution execution = animator.GetComponentInParent<Execution>();
+        return execution == null || execution.enabled;
     }
 }

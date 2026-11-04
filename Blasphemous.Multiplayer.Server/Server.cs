@@ -136,6 +136,7 @@ public class Server
                 case NetworkType.EnemyHit:     receivePlayerEnemyHit(e.ip, data); break;
                 case NetworkType.EnemyDamageReport: receivePlayerEnemyDamageReport(e.ip, data); break;
                 case NetworkType.EnemyStateReport: receivePlayerEnemyStateReport(e.ip, data); break;
+                case NetworkType.EnemyExecutionStarted: receivePlayerEnemyExecutionStarted(e.ip, data); break;
                 case NetworkType.EnemyPosition: receivePlayerEnemyPosition(e.ip, data); break;
                 case NetworkType.PlayerImpact: receivePlayerImpact(e.ip, data); break;
                 case NetworkType.EnemyAttack: receivePlayerEnemyAttack(e.ip, data); break;
@@ -960,6 +961,47 @@ public class Server
             Send(hostIp, routed.ToArray(), NetworkType.EnemyStateReport);
         }
         catch (Exception ex) { Logger.Warn($"Ignored malformed WheelCarrier state report: {ex.GetType().Name}: {ex.Message}"); }
+    }
+
+    // A player who consumes a WheelCarrier execution tells every other player in the room.
+    // This is presentation only: the authoritative death still travels through EnemyDeath.
+    private void receivePlayerEnemyExecutionStarted(string playerIp, byte[] data)
+    {
+        if (data == null || data.Length == 0) return;
+        try
+        {
+            string sceneName; string spawnPointId; int generation; long epoch; byte side;
+            using (MemoryStream stream = new MemoryStream(data))
+            using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
+            {
+                sceneName = reader.ReadString(); spawnPointId = reader.ReadString();
+                generation = reader.ReadInt32(); epoch = reader.ReadInt64(); side = reader.ReadByte();
+                if (stream.Position != stream.Length || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
+                    generation < 0 || epoch < 0 || side > 2) return;
+            }
+
+            PlayerInfo sender = getCurrentPlayer(playerIp);
+            if (sender == null || sender.sceneName != sceneName ||
+                !_sceneAuthority.TryGetHost(sceneName, out string hostIp, out long currentEpoch) || currentEpoch != epoch)
+            {
+                Logger.Warn($"Rejected WheelCarrier execution from wrong scene or stale epoch: player={sender?.name}, scene={sceneName}, epoch={epoch}");
+                return;
+            }
+
+            // Either role can execute, so this is not authority filtered; it only has to
+            // reach the other players who are in the same room and can see the enemy.
+            List<byte> routed = addPlayerNameToData(sender.name);
+            routed.AddRange(data);
+            byte[] packet = routed.ToArray();
+            foreach (string ip in connectedPlayers.Keys)
+            {
+                if (ip == playerIp) continue;
+                PlayerInfo other = connectedPlayers[ip];
+                if (other == null || other.sceneName != sceneName) continue;
+                Send(ip, packet, NetworkType.EnemyExecutionStarted);
+            }
+        }
+        catch (Exception ex) { Logger.Warn($"Ignored malformed WheelCarrier execution packet: {ex.GetType().Name}: {ex.Message}"); }
     }
 
     // Shared enemy health delta

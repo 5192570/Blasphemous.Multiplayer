@@ -28,4 +28,5 @@ public enum NetworkType
     SceneAuthority = 22,
     EnemyDamageReport = 23,
     EnemyStateReport = 24,
+    EnemyExecutionStarted = 25,
 }

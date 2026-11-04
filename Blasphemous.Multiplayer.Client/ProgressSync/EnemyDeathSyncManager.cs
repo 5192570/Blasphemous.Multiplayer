@@ -9,6 +9,7 @@ using Gameplay.GameControllers.Enemies.WheelCarrier;
 using Gameplay.GameControllers.Entities;
 using Framework.FrameworkCore;
 using HarmonyLib;
+using Tools.Level.Interactables;
 using Tools.Level.Layout;
 using UnityEngine;
 
@@ -542,6 +543,73 @@ public static class EnemyDeathSyncManager
         handler.ApplyRemoteSpecialState(state, orientation, sourcePlayerName, false);
         long revision = AdvanceRevision(sceneName, spawnPointId, generation, epoch, "WheelCarrier special-state transition");
         SharedDiagnosticLogger.Info($"[WheelCarrierStateSync] Host mirrors follower state (presentation only) scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, state={state}, epoch={epoch}, revision={revision}");
+    }
+
+    /// <summary>
+    /// Announces that the local player consumed the execution interaction on this enemy.
+    ///
+    /// This is deliberately *not* part of the state report: the executionable state and the
+    /// execution itself are different moments (the timed attack creates the prompt, E/Y starts
+    /// the finisher), and only the second one has a presentation to replay. It is also not the
+    /// death report, even though the owner's kill happens at the same instant: the observer has
+    /// to start the clip, and a lone death cannot be told apart from an interrupted execution.
+    /// </summary>
+    internal static void ReportWheelCarrierExecutionStarted(WheelCarrier wheelCarrier, Execution execution)
+    {
+        if (wheelCarrier == null || execution == null || Main.Multiplayer == null ||
+            Main.Multiplayer.NetworkManager == null || !Main.Multiplayer.NetworkManager.IsConnected ||
+            !TryGetSyncIdentity(wheelCarrier, out string sceneName, out string spawnPointId, out int generation) ||
+            !SceneAuthorityState.TryGet(sceneName, out string hostName, out long epoch) || string.IsNullOrEmpty(hostName))
+            return;
+
+        // Which side of the enemy the executing player is standing on. The owner is the only
+        // client that can answer this: PlayerDirection is measured against the local Penitent,
+        // and an observer's Penitent is not the one performing the finisher.
+        byte side = (byte)execution.PlayerDirection;
+        SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Report send scene={sceneName}, spawn={spawnPointId}, generation={generation}, epoch={epoch}, side={side}, enemyInstance={wheelCarrier.GetInstanceID()}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+        Main.Multiplayer.NetworkManager.SendEnemyExecutionStarted(sceneName, spawnPointId, generation, epoch, side);
+    }
+
+    public static void ApplyRemoteExecutionStarted(string sourcePlayerName, string sceneName, string spawnPointId, int generation, long epoch, byte side)
+    {
+        SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Report received scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, epoch={epoch}, side={side}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+        string rejection = null;
+        EnemySpawnPoint point = null;
+        if (string.IsNullOrEmpty(sourcePlayerName) || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
+            generation < 0 || epoch < 0 || side > 2)
+            rejection = "invalid report fields";
+        else if (string.Equals(sourcePlayerName, Main.Multiplayer?.PlayerName, StringComparison.Ordinal))
+            rejection = "source is local player";
+        else if (Core.LevelManager.currentLevel == null || Core.LevelManager.currentLevel.LevelName != sceneName)
+            rejection = $"scene mismatch current={Core.LevelManager.currentLevel?.LevelName}";
+        else if (!SceneAuthorityState.TryGet(sceneName, out string hostName, out long currentEpoch) || currentEpoch != epoch)
+            rejection = $"authority epoch mismatch host={hostName}, currentEpoch={currentEpoch}";
+        else if (GetGeneration(MakeGenerationKey(sceneName, spawnPointId)) != generation)
+            rejection = $"generation mismatch current={GetGeneration(MakeGenerationKey(sceneName, spawnPointId))}";
+        else if (!TryFindSpawnPoint(sceneName, spawnPointId, out point))
+            rejection = "spawn point not found";
+
+        if (rejection != null)
+        {
+            SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Report rejected scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, side={side}, reason={rejection}, time={Time.realtimeSinceStartup:0.000}");
+            return;
+        }
+
+        if (!(point.SpawnedEnemy is WheelCarrier wheelCarrier))
+        {
+            SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Report rejected scene={sceneName}, spawn={spawnPointId}, source={sourcePlayerName}, reason=spawned enemy is {point.SpawnedEnemy?.GetType().Name ?? "null"}");
+            return;
+        }
+
+        EnemySyncManager.Attach(wheelCarrier);
+        WheelCarrierEnemySyncHandler handler = wheelCarrier.GetComponent<WheelCarrierEnemySyncHandler>();
+        if (handler == null)
+        {
+            SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Report rejected scene={sceneName}, spawn={spawnPointId}, source={sourcePlayerName}, reason=sync handler missing");
+            return;
+        }
+
+        handler.ApplyRemoteExecutionStart(sourcePlayerName, side);
     }
 
     public static void ApplyRemotePosition(string sceneName, string spawnPointId, int generation, long epoch, long revision, Vector3 position, byte orientation, byte state, byte specialState, bool walking, float currentHealth)

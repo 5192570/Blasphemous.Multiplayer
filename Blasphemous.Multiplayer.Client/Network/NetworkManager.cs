@@ -210,6 +210,7 @@ namespace Blasphemous.Multiplayer.Client.Network
                         case NetworkType.EnemyPosition: ReceiveEnemyPosition(messageData); break;
                         case NetworkType.PlayerImpact: ReceivePlayerImpact(messageData); break;
                         case NetworkType.EnemyAttack: ReceiveEnemyAttack(messageData); break;
+                        case NetworkType.EnemyExecutionStarted: ReceiveEnemyExecutionStarted(messageData); break;
                         case NetworkType.DiagnosticControl: ReceiveDiagnosticControl(messageData); break;
                         case NetworkType.DiagnosticBatch: SharedDiagnosticLogger.ReceiveMergedBatch(messageData); break;
                         case NetworkType.SceneAuthority: ReceiveSceneAuthority(messageData); break;
@@ -673,6 +674,37 @@ namespace Blasphemous.Multiplayer.Client.Network
                 }
             }
             catch (Exception ex) { ModLog.Warn($"Ignored malformed WheelCarrier state report: {ex.GetType().Name}: {ex.Message}"); }
+        }
+
+        public void SendEnemyExecutionStarted(string sceneName, string spawnPointId, int generation, long epoch, byte side)
+        {
+            if (!IsConnected || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
+                generation < 0 || epoch < 0 || side > 2) return;
+            using (MemoryStream stream = new MemoryStream())
+            using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8))
+            {
+                writer.Write(sceneName); writer.Write(spawnPointId);
+                writer.Write(generation); writer.Write(epoch); writer.Write(side);
+                QueueMesssage(stream.ToArray(), NetworkType.EnemyExecutionStarted);
+            }
+        }
+
+        private void ReceiveEnemyExecutionStarted(byte[] data)
+        {
+            try
+            {
+                int offset = ExtractNameFromData(data, out string sourcePlayerName);
+                using (MemoryStream stream = new MemoryStream(data, offset, data.Length - offset))
+                using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
+                {
+                    string sceneName = reader.ReadString(); string spawnPointId = reader.ReadString();
+                    int generation = reader.ReadInt32(); long epoch = reader.ReadInt64(); byte side = reader.ReadByte();
+                    if (stream.Position != stream.Length || generation < 0 || epoch < 0 || side > 2 ||
+                        string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) || string.IsNullOrEmpty(sourcePlayerName)) return;
+                    EnemyDeathSyncManager.ApplyRemoteExecutionStarted(sourcePlayerName, sceneName, spawnPointId, generation, epoch, side);
+                }
+            }
+            catch (Exception ex) { ModLog.Warn($"Ignored malformed WheelCarrier execution packet: {ex.GetType().Name}: {ex.Message}"); }
         }
 
         public void SendEnemyAttack(string sceneName, string spawnPointId, int generation, long epoch, long revision, byte orientation)

@@ -677,3 +677,61 @@ frame. The `normalizedTime` check stays as a second exit.
 Hiding the executing player's remote avatar for the finisher is still outstanding: it needs the
 owner's avatar handle and a restore path for every way the clone can end. It is the one remaining
 piece of §8.1 and is deliberately kept out of this commit.
+
+## 14. The executionable presentation, and hiding the executor's avatar (implemented)
+
+§13 fired the finisher's clip on a clone the mirror created only when the finisher report arrived.
+The state-2 report is a separate event that can arrive *before* it, and the observer ran the parry
+branch for it, so nothing was drawing the executionable look until the owner actually executed.
+
+### 14.1 State 2 draws what vanilla draws
+
+`ApplyMirrorPresentation` used to run one branch for `1` and `2`. It now splits them:
+
+* `1` - `GotParry = true` + `AnimatorInyector.ParryReaction()`, unchanged.
+* `2` - `ApplyExecutionParity()` then `EnsureExecutionablePresentation()`: the clone exists, still
+  playing the prefab's own `Interactable Animation` (`WheelCarrier_stun`) with the enemy's own
+  sprite, attack and colliders hidden. That is the blinking executionable body; the enemy object
+  does not need to draw anything for it.
+* anything else - `TearDownExecutionablePresentation("state is no longer executionable")`.
+
+The prefab's `Execution` stays disabled in every phase, so no mirrored path reaches
+`StuntBehaviour.OnStateUpdate` / `Alive()` / `Destroy()`.
+
+### 14.2 One clone, two phases
+
+`CreateExecutionPresentation(ownerName, side)` builds the clone; both phases use it.
+
+| phase | starts | ends |
+|---|---|---|
+| executionable | state 2 (`EnsureExecutionablePresentation`) | the owner's state leaves 2, or `ExecutionablePresentationMaxLifetime` (leak guard only) |
+| finisher | execution-start report (`ApplyRemoteExecutionStart`, reuses the clone) | clip leaves its state / `normalizedTime >= 1` / lifetime cap |
+
+A death that arrives with a clone that never started a finisher destroys it ("death without a
+finisher") and runs the ordinary death cleanup; `completedExecution` is only true when the finisher
+had actually started.
+
+### 14.3 The executor's avatar is hidden on the observer
+
+Vanilla hides the player running a finisher in `Tools.Level.Interactable.ShowPlayer(false)`:
+
+```csharp
+Core.Logic.Penitent.SpriteRenderer.enabled = show;
+Core.Logic.Penitent.DamageArea.enabled = show;
+```
+
+That only ever touches the local Penitent, so on the observer the executor is the remote avatar and
+nothing hides it. `ApplyRemoteExecutionStart` now disables that avatar's `SpriteRenderer`
+(`OtherPlayerManager.FindActivePlayer(owner)`), and `DestroyExecutionPresentation` restores it, which
+covers every clone exit path: clip finished, clip ended, lifetime cap, presentation failure, mirror
+dropped, authoritative death and handler destruction. An avatar that is already gone (scene change,
+disconnect) is simply not restored.
+
+### 14.4 Diagnostics
+
+* `[WheelCarrierExecutionDiag] Executionable presentation created/ended`, `Execution presentation
+  started ... reused=<s>`, `TearDownExecutionablePresentation` reasons, `death without a finisher`.
+* `[PenitentVisibilityDiag] Hiding/Restored executor avatar` on the observer.
+* `[PenitentVisibilityDiag] local Penitent <change>` on both clients: `PenitentVisibilityProbe`
+  logs every transition of `SpriteRenderer.enabled`, `DamageArea.enabled` and `activeInHierarchy`,
+  so a Penitent that is still drawn during a finisher is attributable to a frame and a clip.

@@ -75,8 +75,22 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
 
     private GameObject _executionPresentation;
     private Animator _executionPresentationAnimator;
+    private Animator _executionInteractorAnimator;
     private float _executionPresentationStartedAt;
+    private float _executionPresentationCreatedAt;
     private bool _executionClipStarted;
+
+    // True once the owner's finisher was triggered on the clone. Until then the clone is only the
+    // owner's executionable presentation (the victim's stun loop), which is a different object
+    // lifetime: it can end without any death, and a death is not a completed execution.
+    private bool _executionFinisherStarted;
+
+    /// <summary>Owner whose remote avatar this client hid for the finisher, if any.</summary>
+    private string _hiddenExecutionAvatar;
+
+    // Leak guard for the executionable phase only. The owner's window is Enemy.StuntTime, and its
+    // end arrives as a state report; this never restores presentation on its own.
+    private const float ExecutionablePresentationMaxLifetime = 15f;
     private static bool _executionPrefabShapeLogged;
 
     // Diagnostics only: after a death we watch both hierarchies for a bounded window and log
@@ -310,6 +324,54 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     }
 
     /// <summary>
+    /// Vanilla hides the player who runs a finisher with Interactable.ShowPlayer(false), which only
+    /// touches the local Penitent. On an observer the executor is a remote avatar, so it has to be
+    /// hidden here for the finisher and restored on every exit path.
+    /// </summary>
+    private void HideExecutionOwnerAvatar(string ownerName)
+    {
+        if (ownerName == Main.Multiplayer.PlayerName) return;
+        if (_hiddenExecutionAvatar != null) return;
+
+        OtherPlayerScript avatar = Main.Multiplayer.OtherPlayerManager.FindActivePlayer(ownerName);
+        if (avatar == null)
+        {
+            SharedDiagnosticLogger.Info($"[PenitentVisibilityDiag] Executor avatar not found owner={ownerName}, enemyInstance={_wheelCarrier?.GetInstanceID()}, time={Time.realtimeSinceStartup:0.000}");
+            return;
+        }
+
+        SpriteRenderer renderer = avatar.GetComponent<SpriteRenderer>();
+        if (renderer == null) return;
+
+        bool wasEnabled = renderer.enabled;
+        renderer.enabled = false;
+        _hiddenExecutionAvatar = ownerName;
+        SharedDiagnosticLogger.Info($"[PenitentVisibilityDiag] Hiding executor avatar owner={ownerName}, wasEnabled={wasEnabled}, enemyInstance={_wheelCarrier?.GetInstanceID()}, time={Time.realtimeSinceStartup:0.000}");
+    }
+
+    private void RestoreExecutionOwnerAvatar(string reason)
+    {
+        if (_hiddenExecutionAvatar == null) return;
+
+        string ownerName = _hiddenExecutionAvatar;
+        _hiddenExecutionAvatar = null;
+
+        OtherPlayerScript avatar = Main.Multiplayer.OtherPlayerManager.FindActivePlayer(ownerName);
+        if (avatar == null)
+        {
+            // Scene change or disconnect: the avatar is gone, nothing to restore.
+            SharedDiagnosticLogger.Info($"[PenitentVisibilityDiag] Executor avatar already gone owner={ownerName}, reason={reason}, time={Time.realtimeSinceStartup:0.000}");
+            return;
+        }
+
+        SpriteRenderer renderer = avatar.GetComponent<SpriteRenderer>();
+        if (renderer == null) return;
+
+        renderer.enabled = true;
+        SharedDiagnosticLogger.Info($"[PenitentVisibilityDiag] Restored executor avatar owner={ownerName}, reason={reason}, time={Time.realtimeSinceStartup:0.000}");
+    }
+
+    /// <summary>
     /// Replays the owner's finisher for a player who is only watching it.
     ///
     /// The prefab owns the entire presentation: the executor duplicate that plays the clip, the
@@ -338,23 +400,61 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
             return;
         }
 
-        if (_executionPresentation != null)
+        // A mirrored executionable state already created the prefab; the finisher reuses it.
+        if (_executionPresentation == null && !CreateExecutionPresentation(ownerName, side)) return;
+
+        if (_executionFinisherStarted)
         {
             SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Execution already presented enemyInstance={_wheelCarrier.GetInstanceID()}, owner={ownerName}, aliveFor={(Time.unscaledTime - _executionPresentationStartedAt):0.000}, time={Time.realtimeSinceStartup:0.000}");
             return;
         }
 
+        try
+        {
+            Execution interactable = _executionPresentation.GetComponentInChildren<Execution>(true);
+            Animator prompt = ReadInteractableAnimator(interactable, "interactableAnimator");
+            Animator interactor = _executionInteractorAnimator ?? ReadInteractableAnimator(interactable, "interactorAnimator");
+
+            // Execution.OnUse hides the prompt art right before it starts the clip; until then that
+            // art *is* the executionable presentation.
+            if (prompt != null && prompt.gameObject.activeSelf) prompt.gameObject.SetActive(false);
+
+            _executionFinisherStarted = true;
+            _executionPresentationStartedAt = Time.unscaledTime;
+            HideExecutionOwnerAvatar(ownerName);
+            _executionClipStarted = false;
+            _executionPresentationAnimator = TriggerExecutionClip(_executionPresentation, interactor);
+
+            SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Execution presentation started enemyInstance={_wheelCarrier.GetInstanceID()}, owner={ownerName}, side={side}, animator={(_executionPresentationAnimator != null ? _executionPresentationAnimator.name : "<none>")}, interactor={(interactor != null ? interactor.name : "<none>")}, prompt={(prompt != null ? prompt.name : "<none>")}, reused={(Time.unscaledTime - _executionPresentationCreatedAt):0.000}s, time={Time.realtimeSinceStartup:0.000}");
+        }
+        catch (Exception ex)
+        {
+            SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Execution presentation failed enemyInstance={_wheelCarrier?.GetInstanceID()}, owner={ownerName}, error={ex.GetType().Name}: {ex.Message}");
+            DestroyExecutionPresentation("presentation failed");
+        }
+    }
+
+    /// <summary>
+    /// Instantiates the owner's Execution prefab as a pure visual: no interaction, no sensors, no
+    /// colliders, no animation events, no input notifier. Used both for the mirrored executionable
+    /// state and, if the state report is missed, for the finisher itself.
+    /// </summary>
+    private bool CreateExecutionPresentation(string ownerName, byte side)
+    {
+        if (_wheelCarrier == null || _wheelCarrier.EntExecution == null) return false;
+
         GameObject prefab = _wheelCarrier.EntExecution.ExecutionPrefab;
         if (prefab == null)
         {
             SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Execution presentation skipped: EntExecution has no prefab enemyInstance={_wheelCarrier.GetInstanceID()}, owner={ownerName}");
-            return;
+            return false;
         }
 
         try
         {
             _executionPresentation = (GameObject)Instantiate(prefab, _wheelCarrier.transform.position, Quaternion.identity);
-            _executionPresentationStartedAt = Time.unscaledTime;
+            _executionPresentationCreatedAt = Time.unscaledTime;
+            _executionFinisherStarted = false;
             _executionClipStarted = false;
 
             Execution interactable = _executionPresentation.GetComponentInChildren<Execution>(true);
@@ -388,28 +488,23 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
                 if (collider != null) collider.enabled = false;
             }
 
+            _executionInteractorAnimator = ReadInteractableAnimator(interactable, "interactorAnimator");
+
             LogExecutionPrefabShapeOnce(_executionPresentation, interactable);
 
-            // The owner's Execution() stops drawing the enemy and hands the visuals to the
-            // prefab; mirror that so the two screens show the same thing.
+            // The owner's Execution() stops drawing the enemy and hands the visuals to the prefab.
             if (_wheelCarrier.SpriteRenderer != null) _wheelCarrier.SpriteRenderer.enabled = false;
             if (_wheelCarrier.Attack != null) _wheelCarrier.Attack.gameObject.SetActive(false);
 
-            Animator interactor = ReadInteractableAnimator(interactable, "interactorAnimator");
             Animator prompt = ReadInteractableAnimator(interactable, "interactableAnimator");
-
-            // Execution.OnUse hides the prompt art before it starts the clip. Leaving it visible is
-            // what kept the victim's executionable/stun animation on screen for the whole clone
-            // lifetime, i.e. the enemy still looked finishable five seconds after it died.
-            if (prompt != null && prompt.gameObject.activeSelf) prompt.gameObject.SetActive(false);
-
-            _executionPresentationAnimator = TriggerExecutionClip(_executionPresentation, interactor);
-            SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Execution presentation started enemyInstance={_wheelCarrier.GetInstanceID()}, owner={ownerName}, side={side}, animator={(_executionPresentationAnimator != null ? _executionPresentationAnimator.name : "<none>")}, interactor={(interactor != null ? interactor.name : "<none>")}, prompt={(prompt != null ? prompt.name : "<none>")}, interactable={(interactable != null)}, effects={effects.Length}, time={Time.realtimeSinceStartup:0.000}");
+            SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Executionable presentation created enemyInstance={_wheelCarrier.GetInstanceID()}, owner={ownerName}, side={side}, prompt={(prompt != null ? prompt.name : "<none>")}, interactor={(_executionInteractorAnimator != null ? _executionInteractorAnimator.name : "<none>")}, effects={effects.Length}, time={Time.realtimeSinceStartup:0.000}");
+            return true;
         }
         catch (Exception ex)
         {
             SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Execution presentation failed enemyInstance={_wheelCarrier?.GetInstanceID()}, owner={ownerName}, error={ex.GetType().Name}: {ex.Message}");
             DestroyExecutionPresentation("presentation failed");
+            return false;
         }
     }
 
@@ -510,6 +605,15 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     {
         if (_executionPresentation == null) return;
 
+        if (!_executionFinisherStarted)
+        {
+            // The owner's window ends with a state report; this only stops a clone from leaking if
+            // that report never arrives.
+            if (Time.unscaledTime - _executionPresentationCreatedAt >= ExecutionablePresentationMaxLifetime)
+                TearDownExecutionablePresentation($"executionable lifetime cap {ExecutionablePresentationMaxLifetime:0.0}s");
+            return;
+        }
+
         float age = Time.unscaledTime - _executionPresentationStartedAt;
         if (age < ExecutionPresentationMinPlayTime) return;
 
@@ -544,13 +648,17 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     {
         if (_executionPresentation == null) return;
 
-        float age = Time.unscaledTime - _executionPresentationStartedAt;
+        // The executionable phase never set a finisher start; measure from creation instead.
+        float age = Time.unscaledTime - (_executionFinisherStarted ? _executionPresentationStartedAt : _executionPresentationCreatedAt);
         SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Execution presentation ended enemyInstance={_wheelCarrier?.GetInstanceID()}, reason={reason}, aliveFor={age:0.000}, time={Time.realtimeSinceStartup:0.000}");
         SharedDiagnosticLogger.Info($"[WheelCarrierVisualDiag] Execution presentation final renderers enemyInstance={_wheelCarrier?.GetInstanceID()}, reason={reason}, clone={WheelCarrierVisualProbe.Describe(_executionPresentation.transform)}, time={Time.realtimeSinceStartup:0.000}");
         Destroy(_executionPresentation);
         _executionPresentation = null;
         _executionPresentationAnimator = null;
+        _executionInteractorAnimator = null;
         _executionClipStarted = false;
+        _executionFinisherStarted = false;
+        RestoreExecutionOwnerAvatar(reason);
 
         // Only a survivor needs its sprite back; after a completed execution the enemy is dead
         // and has already been hidden by ApplyDeath.
@@ -768,7 +876,9 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     /// </summary>
     private void ApplyDeathPresentationCleanup(string reason)
     {
-        bool completedExecution = _executionPresentation != null;
+        // Only a triggered finisher makes a death "completed execution". A clone that is still just
+        // the mirrored executionable presentation belongs to a window that ended, not to a riposte.
+        bool completedExecution = _executionPresentation != null && _executionFinisherStarted;
         bool wasParried = _wheelCarrier.Behaviour != null && _wheelCarrier.Behaviour.GotParry;
         float lifeBefore = _wheelCarrier.Stats != null && _wheelCarrier.Stats.Life != null ? _wheelCarrier.Stats.Life.Current : -1f;
 
@@ -795,6 +905,9 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         }
         else
         {
+            // An executionable clone that never became a finisher is stale here.
+            if (_executionPresentation != null) DestroyExecutionPresentation("death without a finisher");
+
             // Ordinary or interrupted death: the command is presentation, so the sprite has to be
             // back on for the death clip to be visible.
             if (_wheelCarrier.SpriteRenderer != null) _wheelCarrier.SpriteRenderer.enabled = true;
@@ -817,6 +930,10 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     {
         if (_wheelCarrier == null || _wheelCarrier.Behaviour == null) return;
 
+        // A clone belongs to the executionable state. Leaving that state without a finisher means
+        // the owner's window ended, so the enemy has to be drawn again.
+        if (_specialState != 2) TearDownExecutionablePresentation("state is no longer executionable");
+
         switch (_specialState)
         {
             case 1:
@@ -826,19 +943,49 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
                 _wheelCarrier.Behaviour.GotParry = true;
                 StopMovement();
                 if (_wheelCarrier.AnimatorInyector != null) _wheelCarrier.AnimatorInyector.ParryReaction();
-                // Execution() disables the attack in vanilla. Keep the sprite visible on
-                // observers: the Execution prefab that replaces it only exists on the
-                // owner's client.
                 if (_specialState == 2)
                 {
                     if (_wheelCarrier.Attack != null) _wheelCarrier.Attack.gameObject.SetActive(false);
                     ApplyExecutionParity();
+                    // Native Execution() does not merely stun the enemy: it hides the enemy and
+                    // hands the visuals to the Execution prefab, whose Interactable Animation plays
+                    // the victim's stun loop - the blinking executionable look. Both states used to
+                    // play the parry pose here, which is why a mirrored enemy looked staggered and
+                    // never became executionable on the observer.
+                    EnsureExecutionablePresentation();
                 }
                 break;
             default:
                 RestoreAlivePresentation();
                 break;
         }
+    }
+
+    /// <summary>
+    /// Creates the owner's Execution prefab as the observer's executionable presentation, if it is
+    /// not already there, and hides the enemy behind it.
+    /// </summary>
+    private void EnsureExecutionablePresentation()
+    {
+        if (_executionPresentation == null && !CreateExecutionPresentation(DescribeMirrorOwner(), (byte)_wheelCarrier.Status.Orientation))
+            return;
+
+        if (_wheelCarrier.SpriteRenderer != null) _wheelCarrier.SpriteRenderer.enabled = false;
+        if (_wheelCarrier.Attack != null) _wheelCarrier.Attack.gameObject.SetActive(false);
+    }
+
+    /// <summary>
+    /// Removes an executionable clone and draws the enemy again. A clone whose finisher already
+    /// started is left alone: from that point on the death path owns it.
+    /// </summary>
+    private void TearDownExecutionablePresentation(string reason)
+    {
+        if (_executionPresentation == null || _executionFinisherStarted) return;
+
+        DestroyExecutionPresentation(reason);
+        if (_wheelCarrier == null) return;
+        if (_wheelCarrier.SpriteRenderer != null && !_wheelCarrier.Status.Dead) _wheelCarrier.SpriteRenderer.enabled = true;
+        if (_wheelCarrier.Attack != null) _wheelCarrier.Attack.gameObject.SetActive(true);
     }
 
     /// <summary>

@@ -80,6 +80,7 @@ internal class Main : BaseUnityPlugin
     private void Update()
     {
         RestoreBackgroundExecution("update");
+        Players.PenitentVisibilityProbe.Tick();
     }
 
     private void RestoreBackgroundExecution(string source)

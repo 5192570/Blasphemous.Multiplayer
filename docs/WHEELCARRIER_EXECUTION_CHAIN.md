@@ -317,3 +317,101 @@ ordinary death presentation rather than nothing.
 
 The first clone also logs the prefab's hierarchy once (`Execution prefab shape ...`), which is what
 answers the three asset questions at the end of this section without an editor.
+
+---
+
+## 8. Post-implementation defects (analysis only, no patch)
+
+Two defects were reported from the first execution test of `49edd71`. Both are explained by code;
+neither needs the prefab re-inspected.
+
+### 8.1 Duplicate execution presentation on the observer
+
+The clone is instantiated from `ACT_WheelCarrierExecution`, whose hierarchy the diagnostic logged:
+
+```
+ACT_WheelCarrierExecution(Clone)[Transform,LayoutElement,Execution,UniqueId,BoxCollider2D,EnemyDamageArea]
+  Input Notificator[Transform,InputNotifier,SpriteRenderer]
+  Interactable Animation[Transform,SpriteRenderer,Animator,AnimatorEvent]
+  Left Interactor Animation[Transform,Animator,SpriteRenderer,BoxCollider2D,AnimatorEvent,CollisionSensor,ExecutionAnimationEvents]
+  RootMotion[Transform,RootMotionDriver]
+  RecolorSprite[Transform,SpriteRenderer,ColorPaletteSwapper]
+  Right Interactor Animation[Transform,Animator,SpriteRenderer,BoxCollider2D,AnimatorEvent,CollisionSensor,ExecutionAnimationEvents]
+  RecolorSprite[Transform,SpriteRenderer,ColorPaletteSwapper]
+```
+
+Four separate objects can draw a Penitent-looking or prompt-looking thing here, and the current
+implementation handles none of them the way vanilla does:
+
+| # | Object | Vanilla | Ours | Result |
+| --- | --- | --- | --- | --- |
+| 1 | `Left Interactor Animation` **and** `Right Interactor Animation` | `Execution.OnUse` triggers **one** animator, the single serialized `Interactable.interactorAnimator` | `TriggerExecutionClip` triggers **every** animator that declares `USED` | two executor duplicates play the finisher at once |
+| 2 | `Interactable Animation` (prompt art) | `OnUse` runs `interactableAnimator.gameObject.SetActive(false)` | never touched | prompt art keeps animating during the clip, so the clone still *looks* interactable |
+| 3 | `Input Notificator` (`InputNotifier`) | a separate component; shows its icon when a Penitent enters its sensors, independent of `Execution.enabled` | never touched, and `InputNotifier.Start` still runs on the clone | an "E" icon can appear over the clone whenever the observer walks near it |
+| 4 | the owner's **remote avatar** (`OtherPlayerScript.CharacterRenderer`, sorting layer `Player`) | the local Penitent is hidden by `ShowPlayer(false)`, so only the prefab's executor is drawn | the mod still draws the remote player | a second, network-synchronised Penitent standing in the room |
+
+`effects=2` in the log is items 1: the two `ExecutionAnimationEvents` components on the two
+interactor objects. Items 2 and 3 explain "remains interactable" without the component being
+usable — `Execution` is disabled, so `Use()`/`OnUse()` cannot run; nothing hides the prompt art.
+
+Item 1 is verifiable and fixable without guessing: read the serialized `interactorAnimator` through
+reflection (`Interactable.interactorAnimator`, `protected`) and trigger exactly that one, which is
+what vanilla does by construction.
+
+Item 4 needs one decision: while the owner's execution plays, the owner's avatar should be hidden on
+observers (it *is* the character being replaced by the prefab's executor), and restored when the
+clip ends or the mirror drops.
+
+### 8.2 The WheelCarrier stays visually wrong after the authoritative death
+
+The logic is not at fault; the presentation state is. `ClearSpecialState` clears bookkeeping only
+(`_specialState`, `_mirroringRemoteState`, owner, presence). Nothing on the death path undoes what
+the mirror applied:
+
+1. **`GotParry` is never cleared on death.** `WheelCarrierAnimatorInyector.OnUpdate`
+   (`WheelCarrierAnimatorInyector.cs:16`) writes `IS_PARRIED = Behaviour.GotParry` **every frame**,
+   so the animator is held in the parry/executionable state and the `DEATH` trigger does not take
+   the enemy out of it. That is the stuck pose.
+2. **The death path that ran is not the one that was patched.** A host observing a follower's
+   execution gets `ApplyAuthoritativeDamageReaction(dead: true)` (`EnemyDeathSyncManager.cs:323` →
+   `WheelCarrierEnemySyncHandler.cs:577`), which still calls `Behaviour.Death()` + `PlayDeath()`.
+   The clone-aware suppression was added to `ApplyDeath()` only, which is the *follower* path
+   (`ApplyNativeRemoteDeath`). Log evidence: `Clearing special state ... reason=authoritative death`
+   is emitted by the damage path, not by `ApplyDeath`.
+3. **`Alive()` is un-suppressed the moment the mirror is dropped.** `ClearSpecialState` sets
+   `_mirroringRemoteState = false`, so `WheelCarrierRemoteParryRecoveryPatch` immediately returns
+   `true` again and `ParryBehaviour.OnStateUpdate` runs natively — on an enemy whose
+   `Status.Dead` is true. It calls `WheelCarrierBehaviour.Alive()`, which re-enables
+   `SpriteRenderer`, sets `GotParry = false`, restores the `Enemy` layer, plays `"Idle"`, disables
+   `EntExecution`, **and rewrites `CurrentLife = Life.Base / 2f`** (`Entity.CurrentLife` writes
+   `Stats.Life.Current`). So the enemy becomes visible again right after dying, and its health is
+   resurrected on that client.
+4. `IsStunt` and the `Default` layer applied by `ApplyExecutionParity()` are likewise never undone
+   on death.
+
+Prediction to confirm in the next log: after a mirrored state-2 death, the surviving enemy's
+`Stats.Life.Current` is no longer 0 (`<Base>/2`), and a `WheelCarrierBehaviour.Alive` call happens
+with `Status.Dead == true` in the same frame the mirror is cleared.
+
+### 8.3 One open identity question
+
+The diagnostic instances do not match:
+
+```
+handler  enemyInstance=-20950   (execution + state diag)
+spawn    spawnedEnemy=[name=Regular489815744, instanceId=-20934, ...]   (OnEntityDie diag)
+```
+
+The same 16-instance offset appears on both clients (`-20964` vs `-20948`), so it is systematic
+rather than a stray object - most likely the spawn prefab instance versus the enemy inside it. It has
+to be settled before any "destroy/hide the object" fix, because hiding the wrong object of the pair
+would leave exactly the visual that is being reported.
+
+### 8.4 Diagnostics to add before the patch
+
+1. `ApplyAuthoritativeDamageReaction` and `ApplyDeath`: log `clone`, `GotParry`, `IsStunt`, layer,
+   `SpriteRenderer.enabled`, `Status.Dead`, `Stats.Life.Current` before and after.
+2. Harmony prefix on `WheelCarrierBehaviour.Alive()`: log `Status.Dead`, `Stats.Life.Current`,
+   `GotParry` and the caller, once per call.
+3. `Execution presentation started`: log the *names* of every animator that was triggered, not just
+   the first, plus `OtherPlayerScript.CharacterRenderer.enabled` for the owner.

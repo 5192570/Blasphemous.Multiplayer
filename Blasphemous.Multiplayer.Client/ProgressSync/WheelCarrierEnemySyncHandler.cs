@@ -580,9 +580,9 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         _wheelCarrier.SetOrientation((EntityOrientation)orientation);
         if (dead)
         {
-            if (_wheelCarrier.Behaviour != null) _wheelCarrier.Behaviour.Death();
-            if (_wheelCarrier.Audio != null) _wheelCarrier.Audio.PlayDeath();
-            ClearSpecialState("authoritative death");
+            // The host applies a follower's lethal report through this path, so it needs the
+            // same cleanup as a death that arrives as a packet.
+            ApplyDeathPresentationCleanup("authoritative death");
         }
         else
         {
@@ -594,24 +594,56 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     internal override void ApplyDeath()
     {
         if (_wheelCarrier == null) return;
+        ApplyDeathPresentationCleanup("remote death");
+    }
 
-        // A completed execution is not a death presentation: the owner's enemy plays no death
-        // clip at all, it is simply destroyed when the finisher ends (KillEntity runs before the
-        // animation starts). Playing Behaviour.Death() here is what showed an ordinary death on
-        // the observer. When a clone is running, hide the enemy and let the clone finish.
-        if (_executionPresentation != null)
+    /// <summary>
+    /// The single death cleanup for every path that applies a remote death: a received death
+    /// packet (<see cref="ApplyDeath"/>) and a lethal damage report applied by the scene host
+    /// (<see cref="ApplyAuthoritativeDamageReaction"/>).
+    ///
+    /// It only ever removes presentation state this client added on top of the authority's
+    /// death. It never calls <see cref="WheelCarrierBehaviour.Alive"/>: no health is restored,
+    /// the renderer is not resurrected into a living pose, and the enemy is not reactivated.
+    /// </summary>
+    private void ApplyDeathPresentationCleanup(string reason)
+    {
+        bool completedExecution = _executionPresentation != null;
+        bool wasParried = _wheelCarrier.Behaviour != null && _wheelCarrier.Behaviour.GotParry;
+        float lifeBefore = _wheelCarrier.Stats != null && _wheelCarrier.Stats.Life != null ? _wheelCarrier.Stats.Life.Current : -1f;
+
+        // WheelCarrierAnimatorInyector.OnUpdate writes IS_PARRIED = Behaviour.GotParry on every
+        // frame, so leaving it set would pin the animator in the parry/executionable pose and the
+        // DEATH trigger could never take it. Clearing it first is what lets the death presentation
+        // play at all, and it is also what stops the mirror from claiming a dead enemy is parried.
+        if (_wheelCarrier.Behaviour != null) _wheelCarrier.Behaviour.GotParry = false;
+
+        // Undo the state-2 parity applied by ApplyExecutionParity(). Both are presentation or
+        // collision flags; neither touches Status.Dead, health or the spawn point.
+        _wheelCarrier.IsStunt = false;
+        int enemyLayer = LayerMask.NameToLayer("Enemy");
+        if (enemyLayer >= 0) _wheelCarrier.gameObject.layer = enemyLayer;
+
+        if (completedExecution)
         {
+            // The owner runs no death clip for a completed execution: it hides the enemy from
+            // Execution() onwards and destroys it when the finisher ends, because KillEntity
+            // happens before the clip starts. The clone is the whole presentation, so the enemy
+            // stays hidden and only the clone plays out.
             if (_wheelCarrier.SpriteRenderer != null) _wheelCarrier.SpriteRenderer.enabled = false;
             if (_wheelCarrier.Attack != null) _wheelCarrier.Attack.gameObject.SetActive(false);
-            SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Remote death during execution presentation: suppressing native death presentation enemyInstance={_wheelCarrier.GetInstanceID()}, time={Time.realtimeSinceStartup:0.000}");
         }
         else
         {
+            // Ordinary or interrupted death: the command is presentation, so the sprite has to be
+            // back on for the death clip to be visible.
+            if (_wheelCarrier.SpriteRenderer != null) _wheelCarrier.SpriteRenderer.enabled = true;
             if (_wheelCarrier.Behaviour != null) _wheelCarrier.Behaviour.Death();
             if (_wheelCarrier.Audio != null) _wheelCarrier.Audio.PlayDeath();
         }
 
-        ClearSpecialState("remote death");
+        ClearSpecialState(reason);
+        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Death presentation cleanup enemyInstance={_wheelCarrier.GetInstanceID()}, reason={reason}, completedExecution={completedExecution}, clearedGotParry={wasParried}, layer={(enemyLayer >= 0 ? enemyLayer : -1)}, sprite={(_wheelCarrier.SpriteRenderer != null && _wheelCarrier.SpriteRenderer.enabled)}, dead={_wheelCarrier.Status.Dead}, lifeBefore={lifeBefore:0.###}, lifeAfter={(_wheelCarrier.Stats != null && _wheelCarrier.Stats.Life != null ? _wheelCarrier.Stats.Life.Current : -1f):0.###}, time={Time.realtimeSinceStartup:0.000}");
     }
 
     /// <summary>
@@ -791,7 +823,40 @@ internal static class WheelCarrierExecutionStateSyncPatch
 internal static class WheelCarrierAliveStateSyncPatch
 {
     [HarmonyLib.HarmonyPostfix]
-    private static void Postfix(WheelCarrierBehaviour __instance) => WheelCarrierStateSyncPatch.Notify(__instance, 0);
+    private static void Postfix(WheelCarrierBehaviour __instance)
+    {
+        if (__instance == null || __instance.WheelCarrier == null || __instance.WheelCarrier.Status.Dead) return;
+        WheelCarrierStateSyncPatch.Notify(__instance, 0);
+    }
+}
+
+/// <summary>
+/// Last line of defence: WheelCarrierBehaviour.Alive() is never allowed to run on a dead enemy.
+///
+/// Alive() is the one method that undoes a death in this class - it re-enables the renderer,
+/// restores the Enemy layer, re-enables the attack object, plays "Idle" and rewrites
+/// CurrentLife to Stats.Life.Base / 2. Every native caller of it (the 1s ParryBehaviour timer,
+/// the execution prefab's StuntBehaviour expiry, anything else) is wrong once Status.Dead is set,
+/// so the guard lives on the method rather than on each caller.
+/// </summary>
+[HarmonyLib.HarmonyPatch(typeof(WheelCarrierBehaviour), nameof(WheelCarrierBehaviour.Alive))]
+internal static class WheelCarrierDeadAliveGuardPatch
+{
+    private static readonly System.Collections.Generic.HashSet<int> logged = new System.Collections.Generic.HashSet<int>();
+
+    [HarmonyLib.HarmonyPrefix]
+    private static bool Prefix(WheelCarrierBehaviour __instance)
+    {
+        if (__instance == null || __instance.WheelCarrier == null) return true;
+        WheelCarrier wheelCarrier = __instance.WheelCarrier;
+        if (wheelCarrier.Status == null || !wheelCarrier.Status.Dead) return true;
+
+        int instanceId = wheelCarrier.GetInstanceID();
+        if (logged.Count > 64) logged.Clear();
+        if (logged.Add(instanceId))
+            SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Refused Alive() on a dead enemy enemyInstance={instanceId}, life={(wheelCarrier.Stats != null && wheelCarrier.Stats.Life != null ? wheelCarrier.Stats.Life.Current : -1f):0.###}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+        return false;
+    }
 }
 
 /// <summary>
@@ -812,11 +877,34 @@ internal static class WheelCarrierRemoteParryRecoveryPatch
         WheelCarrier wheelCarrier = animator.GetComponentInParent<WheelCarrier>();
         if (wheelCarrier == null) return true;
 
+        // Death cleanup drops the mirror, so the suppression below stops applying at exactly the
+        // moment the enemy dies. Without this check the 1s parry timer would fire Alive() on a
+        // corpse: the renderer comes back, the parry state is dropped and CurrentLife is rewritten
+        // to half of base life. Dead enemies never run native parry recovery, mirrored or not.
+        if (IsDead(wheelCarrier))
+        {
+            LogDeadParryRecoverySuppressedOnce(wheelCarrier);
+            return false;
+        }
+
         WheelCarrierEnemySyncHandler handler = wheelCarrier.GetComponent<WheelCarrierEnemySyncHandler>();
         if (handler == null || !handler.SuppressNativeParryRecovery) return true;
 
         handler.LogParryRecoverySuppressedOnce();
         return false;
+    }
+
+    private static readonly System.Collections.Generic.HashSet<int> deadRecoveryLogged = new System.Collections.Generic.HashSet<int>();
+
+    private static bool IsDead(WheelCarrier wheelCarrier) =>
+        wheelCarrier != null && wheelCarrier.Status != null && wheelCarrier.Status.Dead;
+
+    private static void LogDeadParryRecoverySuppressedOnce(WheelCarrier wheelCarrier)
+    {
+        int instanceId = wheelCarrier.GetInstanceID();
+        if (deadRecoveryLogged.Count > 64) deadRecoveryLogged.Clear();
+        if (!deadRecoveryLogged.Add(instanceId)) return;
+        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Suppressed native parry recovery on a dead enemy enemyInstance={instanceId}, life={(wheelCarrier.Stats != null && wheelCarrier.Stats.Life != null ? wheelCarrier.Stats.Life.Current : -1f):0.###}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
     }
 }
 

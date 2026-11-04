@@ -415,3 +415,58 @@ would leave exactly the visual that is being reported.
    `GotParry` and the caller, once per call.
 3. `Execution presentation started`: log the *names* of every animator that was triggered, not just
    the first, plus `OtherPlayerScript.CharacterRenderer.enabled` for the owner.
+
+---
+
+## 9. Death-path correction (implemented)
+
+The defects in §8.2 shared one cause: the mirror's presentation state was never removed on death,
+and the two observer roles took different death paths. Both are fixed here, without touching damage,
+collision protection or death propagation.
+
+### 9.1 One cleanup for both roles
+
+`ApplyDeath()` (a received death packet, i.e. the observer is a follower) and
+`ApplyAuthoritativeDamageReaction(dead: true)` (the host applying a follower's lethal report) now
+both call `ApplyDeathPresentationCleanup(reason)`:
+
+1. `Behaviour.GotParry = false` **first** — `WheelCarrierAnimatorInyector.OnUpdate` re-asserts
+   `IS_PARRIED = GotParry` every frame, so this is what finally lets the `DEATH` trigger take the
+   enemy out of the parry/executionable pose.
+2. `IsStunt = false` and the root layer back to `Enemy`, undoing `ApplyExecutionParity()`.
+3. Presentation, split by case: a completed execution (a clone is running) keeps the enemy hidden
+   and lets the clone finish, because the owner runs no death clip there; anything else turns the
+   sprite back on and plays `Behaviour.Death()` + `PlayDeath()`, which is what an ordinary or
+   interrupted death needs.
+4. `ClearSpecialState(reason)` for the mirror bookkeeping, as before.
+
+It never calls `Alive()`, never restores health, never reactivates the enemy, and never touches
+`Status.Dead` or the spawn point. `Stats.Life.Current` is logged before and after the cleanup, so the
+`CurrentLife` risk can be read straight out of the log instead of being inferred.
+
+### 9.2 The enemy cannot be resurrected
+
+Two independent guards, because the `Alive()` caller is not always the parry timer:
+
+* `WheelCarrierRemoteParryRecoveryPatch` now also refuses to run `ParryBehaviour.OnStateUpdate` when
+  the enemy is dead. That closes the window opened by the cleanup itself: dropping the mirror used to
+  re-enable the suppression-exempt path on the very next frame.
+* `WheelCarrierDeadAliveGuardPatch` prefixes `WheelCarrierBehaviour.Alive()` and refuses it outright
+  when `Status.Dead`. Every native caller (the parry timer, the execution prefab's `StuntBehaviour`
+  expiry, anything future) is wrong once the enemy is dead, so the guard belongs on the method and
+  not on each caller. `WheelCarrierAliveStateSyncPatch` likewise stops reporting `state = 0` for a
+  dead enemy.
+
+`Alive()` is the only method in the class that undoes a death — it re-enables the renderer, restores
+the `Enemy` layer, re-enables the attack object, plays `"Idle"` and rewrites
+`CurrentLife = Stats.Life.Base / 2f` (`Entity.CurrentLife` writes `Stats.Life.Current`). Guarding the
+method is what makes the `CurrentLife` rewrite impossible rather than unlikely.
+
+### 9.3 Known limitation
+
+"Completed" and "interrupted" executions are still told apart by one bit of local observation: a
+clone is running. A completed execution kills through `Execution.OnUse`; an interrupted one kills
+through `Execution.Damage`, which *also* plays the real `DEATH` clip on the owner. Both produce the
+same death packet, so an observer that has a clone cannot distinguish them and currently treats both
+as completed. The fix is one flag on the execution-start packet (or an explicit
+`EnemyExecutionInterrupted`), which belongs with the presentation work in §8.1 rather than here.

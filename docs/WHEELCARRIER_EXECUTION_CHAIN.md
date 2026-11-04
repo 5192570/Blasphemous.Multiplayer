@@ -494,19 +494,40 @@ whether the ~5 s clone lifetime overlaps it.
 
 ---
 
-## 11. Testing aid: `runInBackground`
+## 11. `runInBackground` (BepInEx setting)
 
 Two-client tests switch focus between windows, and Unity pauses an unfocused window, so the client
 that is not in front stops updating and its diagnostics back up (visible as the queue drops in the
-merged stream). The mod config gains `runInBackground` (default `false`, so vanilla behaviour is
-unchanged):
+merged stream).
 
-```json
-{ "runInBackground": true }
+The first attempt read the flag from the mod's own JSON config and failed for a reason the startup
+log states plainly:
+
+```text
+[MultiplayerConfig] runInBackground configured=False, applied=False, configLoaded=False
 ```
 
-`Main.ApplyBackgroundExecution` sets `Application.runInBackground` immediately after the config is
-loaded during plugin start, and logs the configured and applied value. `OnApplicationFocus` and
-`OnApplicationPause` log every transition, so a test log shows whether the client kept running while
-the other window was in front. Keeping the game simulating in the background is opt-in because it
-also keeps audio and AI running.
+`Main.Start()` ran before `Multiplayer.OnInitialize()` had loaded that config, the null check
+resolved to `false`, and Unity was handed `Application.runInBackground = false`. The focus/pause
+callbacks also fire *before* `Start()` in the same log, so a setting applied from the mod config can
+never be early enough.
+
+The setting therefore lives in BepInEx's own config — `BepInEx/config/Blasphemous.Multiplayer.Client.cfg`:
+
+```ini
+[General]
+
+## Keep the game simulating while its window is unfocused. ...
+# Setting type: Boolean
+# Default value: true
+RunInBackground = true
+```
+
+It is bound and applied at the top of `Main.Start()`, before the mod instance is created, so nothing
+about the game's own initialisation can be waiting on it. Default is `true`: a multiplayer client has
+to keep networking while the player looks at another window. Only Unity's `Application.runInBackground`
+is set — no game or Unity system is resumed by hand from `OnApplicationPause`, which would leave them
+inconsistent.
+
+`OnApplicationFocus` and `OnApplicationPause` log every transition together with the configured and
+applied values, so a log shows both whether the client kept running and whether Unity still paused.

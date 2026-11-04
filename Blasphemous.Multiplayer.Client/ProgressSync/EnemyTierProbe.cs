@@ -6,6 +6,7 @@ using Framework.Managers;
 using Gameplay.GameControllers.Combat;
 using Gameplay.GameControllers.Enemies.Framework.IA;
 using Gameplay.GameControllers.Entities;
+using UnityEngine;
 
 namespace Blasphemous.Multiplayer.Client.ProgressSync
 {
@@ -178,7 +179,7 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync
         {
             try
             {
-                EnemyAttack attack = enemy.EnemyAttack();
+                var attack = enemy.EnemyAttack();
                 return attack != null ? $"{attack.GetType().Name}:{attack.enabled}" : "<none>";
             }
             catch (Exception ex)

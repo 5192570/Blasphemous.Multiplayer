@@ -214,6 +214,10 @@ public static class EnemyDeathSyncManager
             !string.Equals(hostName, Main.Multiplayer?.PlayerName, StringComparison.Ordinal))
             return;
 
+        // Nothing logged the arrival of a report before it was applied, so "the host learned about
+        // the death late" and "the hit happened late" were indistinguishable in the logs.
+        SharedDiagnosticLogger.Info($"[EnemyDamageSync] Received damage report scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, damage={resolvedDamage:0.###}, damageType={damageType}, hit={hitId}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+
         string dedupeKey = sourcePlayerName + "::" + hitId;
         if (!processedHitIds.Add(dedupeKey)) return;
         processedHitOrder.Enqueue(dedupeKey);
@@ -463,7 +467,7 @@ public static class EnemyDeathSyncManager
         handler.ApplyRemoteHit(orientation);
     }
 
-    internal static void ReportWheelCarrierStateChange(WheelCarrier wheelCarrier, byte state)
+    internal static void ReportWheelCarrierStateChange(WheelCarrier wheelCarrier, byte state, string source)
     {
         if (wheelCarrier == null || state > 2 || Main.Multiplayer == null || Main.Multiplayer.NetworkManager == null ||
             !Main.Multiplayer.NetworkManager.IsConnected ||
@@ -478,7 +482,10 @@ public static class EnemyDeathSyncManager
         }
 
         long observedRevision = GetRevision(sceneName, spawnPointId, generation, epoch);
-        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Report send scene={sceneName}, spawn={spawnPointId}, generation={generation}, state={state}, epoch={epoch}, observedRevision={observedRevision}, orientation={(byte)wheelCarrier.Status.Orientation}, time={Time.realtimeSinceStartup:0.000}");
+        // The executionable window is Enemy.StuntTime, counted by StuntBehaviour on the owner's
+        // Execution prefab: logging the deadline next to the report is what makes it comparable
+        // with the death timestamp on another client.
+        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Report send scene={sceneName}, spawn={spawnPointId}, generation={generation}, state={state}, source={source}, epoch={epoch}, observedRevision={observedRevision}, orientation={(byte)wheelCarrier.Status.Orientation}, stuntTime={(state == 2 ? wheelCarrier.StuntTime : 0f):0.000}, expiresIn={(state == 2 ? wheelCarrier.StuntTime : 0f):0.000}, life={wheelCarrier.Stats.Life.Current:0.###}, time={Time.realtimeSinceStartup:0.000}");
         Main.Multiplayer.NetworkManager.SendEnemyStateReport(sceneName, spawnPointId, generation, epoch, observedRevision, state,
             (byte)wheelCarrier.Status.Orientation);
         SharedDiagnosticLogger.Info($"[WheelCarrierStateSync] Reported local state scene={sceneName}, spawn={spawnPointId}, generation={generation}, state={state}, epoch={epoch}");

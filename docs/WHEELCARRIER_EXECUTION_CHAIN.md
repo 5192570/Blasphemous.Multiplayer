@@ -555,3 +555,52 @@ the external change once per correction (capped, so a misbehaving build cannot f
 same re-apply runs when focus is regained, so a client that was paused while the property was false is
 put back on the configured value. Nothing is force-resumed and no game system is touched: only the
 Unity property is written, exactly as the vanilla code itself does.
+
+---
+
+## 12. The executionable window, and who owns it
+
+`StuntBehaviour` is the timer behind "executionable", and it does not live on the enemy:
+
+```csharp
+// Gameplay.GameControllers.AnimationBehaviours.Enemies.Stunt/StuntBehaviour.cs
+_currentStuntTime += Time.deltaTime;
+if (_currentStuntTime >= _enemy.StuntTime)          // Enemy.StuntTime, default 5s, serialized per prefab
+{
+    _enemy.GetComponent<EnemyBehaviour>().Alive();
+    Object.Destroy(animator.transform.parent.gameObject);   // the Execution prefab
+}
+```
+
+So the window belongs to the **owner's Execution prefab** and ends with `Alive()` on the owner. It
+never exists on an observer:
+
+* the clone's `Execution` is disabled before `Start`, and `ExecutionPresentationStuntPatch` refuses
+  `StuntBehaviour.OnStateUpdate` when it is disabled, so a clone can never expire, resurrect or
+  destroy anything;
+* the mirror has no timer at all, by design - it ends only on an authoritative condition (state
+  report, death, authority handoff, owner leaving, disconnect). Elapsed time only produces a warning.
+
+Therefore a long executionable display on the observer is *always* either "the owner really stayed in
+that state that long" or "the owner's transition report never arrived or never applied". It cannot be
+the observer waiting for a window to expire, because the observer has no window.
+
+### 12.1 What the correlation needs
+
+| client | line | meaning |
+| --- | --- | --- |
+| owner | `Report send ... state=2, source=execution, stuntTime=, expiresIn=` | when the window opened and when it should end |
+| owner | `Report send ... state=0, source=alive` | the window expired and the enemy stood up |
+| owner | `Reporting resolved hit ...` | when the enemy actually died |
+| observer | `Mirror apply ... before=, previousHeldFor=, state=` | when each mirrored state began and how long the previous one lasted |
+| observer | `Clearing special state ... state=, heldFor=, reason=` | what ended the mirror, how long an observer held it |
+| observer | `Received damage report ...` then `Host applied hit ...` | whether a death report was late or the hit was late |
+
+Two of those were missing and are added here: the native `source` of every state report (previously
+all sends looked identical) and the arrival of a damage report (previously only the result of applying
+it was logged, so a late delivery was invisible).
+
+The one place where a report could vanish silently was the "execution is terminal" guard - a parry
+report arriving while the mirror holds the executionable state is dropped. That is deliberate, but it
+was invisible; it now logs `Ignored parry report while mirroring executionable` with how long the
+state had been held.

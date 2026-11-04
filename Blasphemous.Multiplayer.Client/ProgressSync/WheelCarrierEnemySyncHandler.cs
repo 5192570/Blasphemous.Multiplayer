@@ -203,7 +203,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         ClearSpecialState("authority context changed: " + reason);
     }
 
-    internal void NotifyNativeSpecialState(byte state)
+    internal void NotifyNativeSpecialState(byte state, string source)
     {
         if (_applyingRemoteSpecialState || _wheelCarrier == null || state > 2) return;
         if (_specialState == state && !_mirroringRemoteState) return;
@@ -225,7 +225,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         _parryRecoverySuppressionLogged = false;
         _specialStateChangedAt = Time.unscaledTime;
         _lastMirrorConfirmedAt = Time.unscaledTime;
-        EnemyDeathSyncManager.ReportWheelCarrierStateChange(_wheelCarrier, state);
+        EnemyDeathSyncManager.ReportWheelCarrierStateChange(_wheelCarrier, state, source);
     }
 
     internal void ApplyRemoteSpecialState(byte state, byte orientation, string ownerName, bool ownerIsAuthority)
@@ -261,7 +261,13 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         }
 
         // Execution is terminal for the owner: a late parry update must not regress it.
-        if (_mirroringRemoteState && _specialState == 2 && state == 1) return;
+        if (_mirroringRemoteState && _specialState == 2 && state == 1)
+        {
+            // This used to drop the report silently, which made an owner-side regression to the
+            // parry state indistinguishable from "the owner never said anything".
+            SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Ignored parry report while mirroring executionable enemyInstance={_wheelCarrier.GetInstanceID()}, heldFor={(Time.unscaledTime - _specialStateChangedAt):0.000}, owner={DescribeMirrorOwner()}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+            return;
+        }
 
         // A local transition ended moments ago; ignore the echo of the state we just
         // left (a snapshot that crossed our report). Anything else is a genuine
@@ -275,6 +281,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         }
 
         byte before = _specialState;
+        float previousHeldFor = Time.unscaledTime - _specialStateChangedAt;
         _applyingRemoteSpecialState = true;
         try
         {
@@ -293,7 +300,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
             _specialStateChangedAt = Time.unscaledTime;
             _lastMirrorConfirmedAt = Time.unscaledTime;
             ApplyMirrorPresentation();
-            SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Mirror apply (presentation only) enemyInstance={_wheelCarrier.GetInstanceID()}, before={before}, state={state}, orientation={orientation}, owner={DescribeMirrorOwner()}, ownerIsAuthority={ownerIsAuthority}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+            SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Mirror apply (presentation only) enemyInstance={_wheelCarrier.GetInstanceID()}, before={before}, previousHeldFor={previousHeldFor:0.000}, state={state}, orientation={orientation}, owner={DescribeMirrorOwner()}, ownerIsAuthority={ownerIsAuthority}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
         }
         finally
         {
@@ -825,7 +832,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     {
         if (_specialState == 0 && !_mirroringRemoteState) return;
 
-        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Clearing special state enemyInstance={_wheelCarrier?.GetInstanceID()}, state={_specialState}, mirrored={_mirroringRemoteState}, owner={DescribeMirrorOwner()}, reason={reason}, time={Time.realtimeSinceStartup:0.000}");
+        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Clearing special state enemyInstance={_wheelCarrier?.GetInstanceID()}, state={_specialState}, mirrored={_mirroringRemoteState}, owner={DescribeMirrorOwner()}, heldFor={(Time.unscaledTime - _specialStateChangedAt):0.000}, reason={reason}, time={Time.realtimeSinceStartup:0.000}");
         _specialState = 0;
         _mirroringRemoteState = false;
         _mirrorOwner = string.Empty;
@@ -895,14 +902,14 @@ internal static class WheelCarrierAttackSyncPatch
 internal static class WheelCarrierParryStateSyncPatch
 {
     [HarmonyLib.HarmonyPostfix]
-    private static void Postfix(WheelCarrierBehaviour __instance) => WheelCarrierStateSyncPatch.Notify(__instance, 1);
+    private static void Postfix(WheelCarrierBehaviour __instance) => WheelCarrierStateSyncPatch.Notify(__instance, 1, "parry");
 }
 
 [HarmonyLib.HarmonyPatch(typeof(WheelCarrierBehaviour), nameof(WheelCarrierBehaviour.Execution))]
 internal static class WheelCarrierExecutionStateSyncPatch
 {
     [HarmonyLib.HarmonyPostfix]
-    private static void Postfix(WheelCarrierBehaviour __instance) => WheelCarrierStateSyncPatch.Notify(__instance, 2);
+    private static void Postfix(WheelCarrierBehaviour __instance) => WheelCarrierStateSyncPatch.Notify(__instance, 2, "execution");
 }
 
 [HarmonyLib.HarmonyPatch(typeof(WheelCarrierBehaviour), nameof(WheelCarrierBehaviour.Alive))]
@@ -912,7 +919,7 @@ internal static class WheelCarrierAliveStateSyncPatch
     private static void Postfix(WheelCarrierBehaviour __instance)
     {
         if (__instance == null || __instance.WheelCarrier == null || __instance.WheelCarrier.Status.Dead) return;
-        WheelCarrierStateSyncPatch.Notify(__instance, 0);
+        WheelCarrierStateSyncPatch.Notify(__instance, 0, "alive");
     }
 }
 
@@ -996,7 +1003,7 @@ internal static class WheelCarrierRemoteParryRecoveryPatch
 
 internal static class WheelCarrierStateSyncPatch
 {
-    internal static void Notify(WheelCarrierBehaviour behaviour, byte state)
+    internal static void Notify(WheelCarrierBehaviour behaviour, byte state, string source)
     {
         if (behaviour == null || behaviour.WheelCarrier == null) return;
         WheelCarrierEnemySyncHandler handler = behaviour.WheelCarrier.GetComponent<WheelCarrierEnemySyncHandler>();
@@ -1006,7 +1013,7 @@ internal static class WheelCarrierStateSyncPatch
             handler = behaviour.WheelCarrier.GetComponent<WheelCarrierEnemySyncHandler>();
         }
         if (handler != null && !handler.IsApplyingRemoteSpecialState)
-            handler.NotifyNativeSpecialState(state);
+            handler.NotifyNativeSpecialState(state, source);
     }
 }
 
@@ -1041,7 +1048,7 @@ internal static class WheelCarrierDamageSyncPatch
 
         if (__instance.Behaviour.GotParry) return;
         if (handler.SpecialState == 1)
-            handler.NotifyNativeSpecialState(0);
+            handler.NotifyNativeSpecialState(0, "hit cleared parry");
     }
 }
 

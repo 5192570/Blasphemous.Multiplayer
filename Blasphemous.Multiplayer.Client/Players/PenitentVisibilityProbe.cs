@@ -1,6 +1,6 @@
 using Blasphemous.Multiplayer.Client.Network;
 using Framework.Managers;
-using Gameplay.GameControllers.Penitent.Penitent;
+using Gameplay.GameControllers.Penitent;
 using UnityEngine;
 
 namespace Blasphemous.Multiplayer.Client.Players

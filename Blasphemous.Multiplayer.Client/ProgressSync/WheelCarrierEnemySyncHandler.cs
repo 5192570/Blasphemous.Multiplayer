@@ -78,6 +78,21 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     private float _executionPresentationStartedAt;
     private static bool _executionPrefabShapeLogged;
 
+    // Diagnostics only: after a death we watch both hierarchies for a bounded window and log
+    // every renderer/particle/animator that starts or stops drawing. This is how "which object
+    // still draws the enemy?" gets answered instead of guessed.
+    private const float VisualWatchSeconds = 8f;
+
+    // Sampling interval for the renderer diff: transitions are what matter, and 10 Hz keeps the
+    // diagnostic stream readable next to the queue drops seen in the last log.
+    private const float VisualWatchSampleInterval = 0.1f;
+
+    private float _visualWatchUntil;
+    private float _nextVisualSample;
+    private Transform _visualWatchClone;
+    private System.Collections.Generic.Dictionary<string, string> _visualEnemyState;
+    private System.Collections.Generic.Dictionary<string, string> _visualCloneState;
+
     protected override void OnAttach()
     {
         WheelCarrier wheelCarrier = Enemy as WheelCarrier;
@@ -147,6 +162,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         // The clone outlives the mirror (the owner's death lands at the start of the execution
         // and clears the state), so it has to be ticked before the mirror early-return.
         TickExecutionPresentation();
+        TickVisualWatch();
         if (!IsMirroringRemoteSpecialState || Time.unscaledTime < _nextMirrorCheck) return;
         _nextMirrorCheck = Time.unscaledTime + MirrorCheckInterval;
 
@@ -456,6 +472,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
 
         float age = Time.unscaledTime - _executionPresentationStartedAt;
         SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Execution presentation ended enemyInstance={_wheelCarrier?.GetInstanceID()}, reason={reason}, aliveFor={age:0.000}, time={Time.realtimeSinceStartup:0.000}");
+        SharedDiagnosticLogger.Info($"[WheelCarrierVisualDiag] Execution presentation final renderers enemyInstance={_wheelCarrier?.GetInstanceID()}, reason={reason}, clone={WheelCarrierVisualProbe.Describe(_executionPresentation.transform)}, time={Time.realtimeSinceStartup:0.000}");
         Destroy(_executionPresentation);
         _executionPresentation = null;
         _executionPresentationAnimator = null;
@@ -467,6 +484,74 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     }
 
     private void OnDestroy() => DestroyExecutionPresentation("sync handler destroyed");
+
+    /// <summary>
+    /// Diagnostic only: records what every renderer in the enemy and the clone hierarchy is
+    /// doing at the moment of death, then logs each later transition for a bounded window.
+    /// Nothing here mutates presentation state - visibility fixes come after the log names
+    /// the object.
+    /// </summary>
+    private void StartVisualWatch(string reason)
+    {
+        _visualWatchUntil = Time.realtimeSinceStartup + VisualWatchSeconds;
+        _nextVisualSample = 0f;
+        _visualWatchClone = _executionPresentation != null ? _executionPresentation.transform : null;
+        _visualEnemyState = WheelCarrierVisualProbe.Capture(_wheelCarrier.transform);
+        _visualCloneState = WheelCarrierVisualProbe.Capture(_visualWatchClone);
+
+        SharedDiagnosticLogger.Info($"[WheelCarrierVisualDiag] Post-death renderers reason={reason}, enemyInstance={_wheelCarrier.GetInstanceID()}, enemyActive={_wheelCarrier.gameObject.activeInHierarchy}, attackActive={(_wheelCarrier.Attack != null ? _wheelCarrier.Attack.gameObject.activeInHierarchy.ToString() : "none")}, enemy={WheelCarrierVisualProbe.Describe(_wheelCarrier.transform)}, cloneActive={(_visualWatchClone != null ? _visualWatchClone.gameObject.activeInHierarchy.ToString() : "none")}, clone={WheelCarrierVisualProbe.Describe(_visualWatchClone)}, window={VisualWatchSeconds:0.0}s, time={Time.realtimeSinceStartup:0.000}");
+    }
+
+    private void TickVisualWatch()
+    {
+        if (_visualEnemyState == null && _visualCloneState == null) return;
+
+        if (Time.realtimeSinceStartup >= _visualWatchUntil)
+        {
+            SharedDiagnosticLogger.Info($"[WheelCarrierVisualDiag] Post-death renderer watch ended enemyInstance={_wheelCarrier?.GetInstanceID()}, time={Time.realtimeSinceStartup:0.000}");
+            _visualEnemyState = null;
+            _visualCloneState = null;
+            _visualWatchClone = null;
+            return;
+        }
+
+        if (Time.realtimeSinceStartup < _nextVisualSample) return;
+        _nextVisualSample = Time.realtimeSinceStartup + VisualWatchSampleInterval;
+
+        if (_wheelCarrier != null)
+        {
+            System.Collections.Generic.Dictionary<string, string> current = WheelCarrierVisualProbe.Capture(_wheelCarrier.transform);
+            string changes = WheelCarrierVisualProbe.Diff(_visualEnemyState, current);
+            if (changes != null)
+            {
+                SharedDiagnosticLogger.Info($"[WheelCarrierVisualDiag] Enemy renderer changed enemyInstance={_wheelCarrier.GetInstanceID()}, changes={changes}, time={Time.realtimeSinceStartup:0.000}");
+                _visualEnemyState = current;
+            }
+        }
+        else if (_visualEnemyState != null)
+        {
+            SharedDiagnosticLogger.Info($"[WheelCarrierVisualDiag] Enemy object destroyed, time={Time.realtimeSinceStartup:0.000}");
+            _visualEnemyState = null;
+        }
+
+        if (_visualWatchClone == null)
+        {
+            if (_visualCloneState != null)
+            {
+                SharedDiagnosticLogger.Info($"[WheelCarrierVisualDiag] Execution clone gone, time={Time.realtimeSinceStartup:0.000}");
+                _visualCloneState = null;
+            }
+            return;
+        }
+
+        System.Collections.Generic.Dictionary<string, string> cloneCurrent = WheelCarrierVisualProbe.Capture(_visualWatchClone);
+        string cloneChanges = WheelCarrierVisualProbe.Diff(_visualCloneState, cloneCurrent);
+        if (cloneChanges != null)
+        {
+            SharedDiagnosticLogger.Info($"[WheelCarrierVisualDiag] Execution clone renderer changed enemyInstance={_wheelCarrier?.GetInstanceID()}, changes={cloneChanges}, time={Time.realtimeSinceStartup:0.000}");
+            _visualCloneState = cloneCurrent;
+        }
+    }
 
     /// <summary>Re-asserts the mirrored presentation after a local hit cleared GotParry.</summary>
     internal void ReassertMirroredSpecialState()
@@ -643,6 +728,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         }
 
         ClearSpecialState(reason);
+        StartVisualWatch(reason);
         SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Death presentation cleanup enemyInstance={_wheelCarrier.GetInstanceID()}, reason={reason}, completedExecution={completedExecution}, clearedGotParry={wasParried}, layer={(enemyLayer >= 0 ? enemyLayer : -1)}, sprite={(_wheelCarrier.SpriteRenderer != null && _wheelCarrier.SpriteRenderer.enabled)}, dead={_wheelCarrier.Status.Dead}, lifeBefore={lifeBefore:0.###}, lifeAfter={(_wheelCarrier.Stats != null && _wheelCarrier.Stats.Life != null ? _wheelCarrier.Stats.Life.Current : -1f):0.###}, time={Time.realtimeSinceStartup:0.000}");
     }
 

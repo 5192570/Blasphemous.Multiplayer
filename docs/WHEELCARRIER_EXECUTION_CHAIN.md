@@ -470,3 +470,24 @@ through `Execution.Damage`, which *also* plays the real `DEATH` clip on the owne
 same death packet, so an observer that has a clone cannot distinguish them and currently treats both
 as completed. The fix is one flag on the execution-start packet (or an explicit
 `EnemyExecutionInterrupted`), which belongs with the presentation work in §8.1 rather than here.
+
+---
+
+## 10. Residual-visual probe (diagnostic only)
+
+The death path is verified, but something still draws the WheelCarrier for a moment after the
+authoritative death. Rather than guess which renderer it is, `WheelCarrierVisualProbe` records every
+`SpriteRenderer`, `ParticleSystem` and `Animator` in a hierarchy — `enabled`, `activeInHierarchy`,
+colour, material, image, sorting layer/order, clip and normalised time — and `WheelCarrierEnemySyncHandler`
+logs only the transitions for a bounded window.
+
+* At death cleanup: one full dump of the enemy hierarchy and, if a clone is running, of the clone —
+  plus `enemyActive`, `attackActive` and the clone's active state.
+* Every 100 ms for 8 s (the clone's own `USED` clip is ~5 s): any object that starts or stops
+  drawing, or whose clip/colour/material changes, as a before/after pair.
+* When the clone is destroyed: its final renderer dump, so the last drawn frame is on record.
+
+It changes nothing: no renderer, animator or active state is touched, and the watch expires on its
+own (diagnostic window, not a recovery path). The output answers the three open questions directly —
+whether the residual is the enemy, the clone or a third object; when exactly each stops drawing; and
+whether the ~5 s clone lifetime overlaps it.

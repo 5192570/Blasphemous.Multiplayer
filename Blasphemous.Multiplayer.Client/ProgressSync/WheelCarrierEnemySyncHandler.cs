@@ -62,13 +62,33 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     private float _nextMirrorCheck;
     private float _nextMirrorWarning;
     private bool _mirrorOwnerPresenceKnown;
+    private byte _lastLeftLocalState;
+    private bool _parryRecoverySuppressionLogged;
 
     protected override void OnAttach()
     {
-        _wheelCarrier = Enemy as WheelCarrier;
-        if (_wheelCarrier != null && _wheelCarrier.Behaviour != null && _wheelCarrier.Behaviour.GotParry)
-            _specialState = _wheelCarrier.EntExecution != null && _wheelCarrier.EntExecution.enabled ? (byte)2 : (byte)1;
-        _specialStateChangedAt = Time.unscaledTime;
+        WheelCarrier wheelCarrier = Enemy as WheelCarrier;
+
+        // EnemySyncManager.Attach() runs again for every late enemy report, so this must
+        // be idempotent. Re-running the initialisation used to reset the ownership
+        // timestamps, which made the grace window swallow the very transition the report
+        // had just asked us to apply (visible as "age=0.000" in the diagnostics).
+        if (ReferenceEquals(_wheelCarrier, wheelCarrier)) return;
+
+        _wheelCarrier = wheelCarrier;
+        _specialState = 0;
+        _mirroringRemoteState = false;
+        _mirrorOwner = string.Empty;
+        _mirrorOwnerIsAuthority = false;
+        _mirrorOwnerPresenceKnown = false;
+        _lastLeftLocalState = 0;
+        _parryRecoverySuppressionLogged = false;
+        // Never "just changed": a freshly attached enemy has no local ownership to protect.
+        _specialStateChangedAt = float.NegativeInfinity;
+        _lastMirrorConfirmedAt = float.NegativeInfinity;
+
+        if (wheelCarrier != null && wheelCarrier.Behaviour != null && wheelCarrier.Behaviour.GotParry)
+            _specialState = wheelCarrier.EntExecution != null && wheelCarrier.EntExecution.enabled ? (byte)2 : (byte)1;
     }
 
     internal override bool IsWalking => _wheelCarrier != null && _wheelCarrier.Input != null && Mathf.Abs(_wheelCarrier.Input.HorizontalInput) > 0.01f;
@@ -95,6 +115,17 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     /// also rewrites CurrentLife), so it is suppressed for mirrored states.
     /// </summary>
     internal bool SuppressNativeParryRecovery => IsMirroringRemoteSpecialState && !_applyingRemoteSpecialState;
+
+    /// <summary>
+    /// Logs the parry-recovery suppression once per mirrored parry episode instead of on
+    /// every animator update.
+    /// </summary>
+    internal void LogParryRecoverySuppressedOnce()
+    {
+        if (_parryRecoverySuppressionLogged) return;
+        _parryRecoverySuppressionLogged = true;
+        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Suppressed native parry recovery on mirrored state enemyInstance={_wheelCarrier?.GetInstanceID()}, state={_specialState}, owner={DescribeMirrorOwner()}, time={Time.realtimeSinceStartup:0.000}");
+    }
 
     internal override void OnSyncUpdate()
     {
@@ -148,11 +179,16 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         if (_mirroringRemoteState)
             SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Local transition took ownership from mirror enemyInstance={_wheelCarrier.GetInstanceID()}, mirroredState={_specialState}, mirroredOwner={DescribeMirrorOwner()}, nativeState={state}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
 
+        byte previousState = _specialState;
         _specialState = state;
         _mirroringRemoteState = false;
         _mirrorOwner = string.Empty;
         _mirrorOwnerIsAuthority = false;
         _mirrorOwnerPresenceKnown = false;
+        // Only the state we just left can be echoed back by an in-flight snapshot; any
+        // other transition belongs to another player and must be applied.
+        _lastLeftLocalState = state == 0 ? previousState : (byte)0;
+        _parryRecoverySuppressionLogged = false;
         _specialStateChangedAt = Time.unscaledTime;
         _lastMirrorConfirmedAt = Time.unscaledTime;
         EnemyDeathSyncManager.ReportWheelCarrierStateChange(_wheelCarrier, state);
@@ -193,10 +229,14 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         // Execution is terminal for the owner: a late parry update must not regress it.
         if (_mirroringRemoteState && _specialState == 2 && state == 1) return;
 
-        // A local transition ended moments ago; a snapshot that straddles it is stale.
-        if (!_mirroringRemoteState && Time.unscaledTime - _specialStateChangedAt < LocalOwnershipGrace)
+        // A local transition ended moments ago; ignore the echo of the state we just
+        // left (a snapshot that crossed our report). Anything else is a genuine
+        // transition, possibly owned by another player, and must be applied even if it
+        // arrives in the same frame as a local change.
+        bool echoOfLeftState = _specialState == 0 && _lastLeftLocalState != 0 && state == _lastLeftLocalState;
+        if (!_mirroringRemoteState && echoOfLeftState && Time.unscaledTime - _specialStateChangedAt < LocalOwnershipGrace)
         {
-            SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Ignored stale authority state during local ownership grace enemyInstance={_wheelCarrier.GetInstanceID()}, localState={_specialState}, requested={state}, age={(Time.unscaledTime - _specialStateChangedAt):0.000}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+            SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Ignored echo of locally ended state enemyInstance={_wheelCarrier.GetInstanceID()}, leftState={_lastLeftLocalState}, requested={state}, age={(Time.unscaledTime - _specialStateChangedAt):0.000}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
             return;
         }
 
@@ -214,6 +254,8 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
             // is what lets this mirror still be cleared when the owner disconnects
             // before that poll ever sees them connected.
             _mirrorOwnerPresenceKnown = !ownerIsAuthority && !string.IsNullOrEmpty(_mirrorOwner);
+            _lastLeftLocalState = 0;
+            _parryRecoverySuppressionLogged = false;
             _specialStateChangedAt = Time.unscaledTime;
             _lastMirrorConfirmedAt = Time.unscaledTime;
             ApplyMirrorPresentation();
@@ -421,6 +463,8 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         _mirrorOwner = string.Empty;
         _mirrorOwnerIsAuthority = false;
         _mirrorOwnerPresenceKnown = false;
+        _lastLeftLocalState = 0;
+        _parryRecoverySuppressionLogged = false;
         _specialStateChangedAt = Time.unscaledTime;
         _lastMirrorConfirmedAt = Time.unscaledTime;
     }
@@ -521,7 +565,7 @@ internal static class WheelCarrierRemoteParryRecoveryPatch
         WheelCarrierEnemySyncHandler handler = wheelCarrier.GetComponent<WheelCarrierEnemySyncHandler>();
         if (handler == null || !handler.SuppressNativeParryRecovery) return true;
 
-        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Suppressed native parry recovery on mirrored state enemyInstance={wheelCarrier.GetInstanceID()}, state={handler.SpecialState}, time={UnityEngine.Time.realtimeSinceStartup:0.000}");
+        handler.LogParryRecoverySuppressedOnce();
         return false;
     }
 }

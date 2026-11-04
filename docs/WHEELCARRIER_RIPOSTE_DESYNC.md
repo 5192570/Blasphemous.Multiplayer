@@ -336,3 +336,36 @@ the authority's generation bump rejects the second one. The previous random GUID
 
 On the authority side, `CommitAuthorityDeath` bumps the generation, so a repeat call
 returns early in `CompleteLocalHit` and in a second `ReportUnattributedLocalDeath`.
+
+### 7.4 Runtime finding: the ownership grace swallowed the report (fixed)
+
+First two-player test of this branch (P1 host, P2 follower) showed the host receiving
+P2's `state = 2` report and then logging:
+
+```
+[WheelCarrierStateDiag] Ignored stale authority state during local ownership grace ...
+    localState=0, requested=2, age=0.000
+```
+
+`age=0.000` is the whole story. `ApplyRemoteWheelCarrierStateReport` calls
+`EnemySyncManager.Attach(wheelCarrier)` before applying the state, and
+`EnemySyncManager.Attach` calls `handler.Attach(enemy)` → `OnAttach()` **unconditionally**,
+even when the handler was already attached. `OnAttach` set
+`_specialStateChangedAt = Time.unscaledTime`, so the state it was about to apply was
+always 0 ms old and always inside the 1 s grace window. That applied to the `state = 1`
+report as well, so the host never mirrored the parry at all: the enemy stayed alive, kept
+chasing and attacking, and every later transition was swallowed the same way.
+
+Two changes:
+
+1. `OnAttach()` is now idempotent — it returns immediately when the handler is already
+   attached to the same enemy instance, and a fresh handler initialises its timestamps to
+   `float.NegativeInfinity` so it never starts inside a grace window.
+2. The grace was narrowed: it may only ignore an echo of *the state this client just
+   left* (`_lastLeftLocalState`). Any other transition — in particular another player's
+   parry or execution arriving in the same frame as a local change — is applied. The
+   window's original purpose (a snapshot that crossed our own report) is preserved.
+
+`EnemySyncManager.Attach` is intentionally left untouched: making the handler idempotent
+fixes the whole class of "re-attach resets runtime state" bugs, including for the Fool
+handler and any future handler.

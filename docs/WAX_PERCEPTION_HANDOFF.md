@@ -52,7 +52,13 @@ for them.
    `touched=[<none>]` — the sensor's entity list, which can only contain
    real `Entity` objects.
 
-4. **Handler-driven `Rise()` (current, UNTESTED):** vanilla check confirmed
+4. **Handler-driven `Rise()` (`378c969`, TESTED WORKING — perception
+   solved):** user-verified both players can now trigger the emerge (P2
+   alone with P1 at the scene edge included) and the early-submerge
+   symptom disappeared with it (same root cause). The probe that produced
+   this chain has been removed from the handler; what remains is the
+   mechanism: `PlayerSeen`/`PlayerHeard` field drives, sensor object-list
+   mirroring, and the throttled `Rise()` drive. Vanilla check confirmed
    `WaxCrawlerBehaviour.Rise()` is self-contained (sets `Awake`/`Melting`,
    sprite on, animator speed 1, `Appear()`; no blackboard state), and
    `Chase(Transform)` only null-checks its target. So while a player is

@@ -48,14 +48,7 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
     private byte _appliedPresentationState = PresentationUnknown;
     private bool _isAuthority;
 
-    // Perception probe state (authority only, diagnostic): while any player is
-    // in the sensor or the crawler is awake, all candidate wake inputs are
-    // logged once a second so a known-good run (host in the mud) can be diffed
-    // against a failing one (follower in the mud) to find the input the
-    // behaviour tree actually gates on. Remove once perception is solved.
-    private float _nextProbeTime;
     private float _nextRiseDriveTime;
-    private bool _awakeObserved;
     private bool _sensorMissingLogged;
 
     // EnemyBehaviour.PlayerSeen drives this enemy's wake/chase decisions, but
@@ -195,83 +188,6 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
             _crawler.Behaviour.Rise();
             SharedDiagnosticLogger.Info($"[WaxPerceptionDiag] Rise() driven by handler (localSeen={localSeen}, remoteSeen={remoteSeen}), enemyInstance={_crawler.GetInstanceID()}");
         }
-
-        bool awakeFlip = _crawler.Behaviour.Awake != _awakeObserved;
-        _awakeObserved = _crawler.Behaviour.Awake;
-        if (awakeFlip || ((seen || _awakeObserved) && Time.unscaledTime >= _nextProbeTime))
-        {
-            _nextProbeTime = Time.unscaledTime + 1f;
-            LogPerceptionProbe(sensor, collisionSensor, localSeen, remoteSeen);
-        }
-    }
-
-    private void LogPerceptionProbe(Collider2D sensor, CollisionSensor collisionSensor, bool localSeen, bool remoteSeen)
-    {
-        WaxCrawlerBehaviour behaviour = _crawler.Behaviour;
-
-        string touched = "<none>";
-        if (collisionSensor != null)
-        {
-            Entity[] entities = collisionSensor.GetTouchedEntities();
-            if (entities.Length > 0)
-            {
-                touched = "";
-                for (int i = 0; i < entities.Length; i++)
-                {
-                    if (i > 0) touched += ",";
-                    touched += entities[i] == null ? "<null>" : entities[i].GetType().Name;
-                }
-            }
-        }
-
-        bool hearingColliding = false;
-        try
-        {
-            Collider2D hearing = behaviour.GetHearingSensor();
-            CollisionSensor hearingSensor = hearing == null ? null : hearing.GetComponent<CollisionSensor>();
-            hearingColliding = hearingSensor != null && hearingSensor.IsColliding();
-        }
-        catch (System.Exception)
-        {
-        }
-
-        string animatorState = "<none>";
-        Animator animator = _crawler.AnimatorInyector == null ? null : _crawler.AnimatorInyector.Animator;
-        if (animator != null)
-        {
-            AnimatorStateInfo info = animator.GetCurrentAnimatorStateInfo(0);
-            animatorState = info.IsName("Appear") ? "Appear"
-                : info.IsName("Disappear") ? "Disappear"
-                : info.IsName("Walk") ? "Walk"
-                : info.IsName("Idle") ? "Idle"
-                : info.IsName("Hurt") ? "Hurt"
-                : info.IsName("Death") ? "Death"
-                : "hash:" + info.shortNameHash;
-        }
-
-        float distPenitent = -1f;
-        if (Core.Logic.Penitent != null)
-            distPenitent = Vector2.Distance((Vector2)_crawler.transform.position, (Vector2)Core.Logic.Penitent.transform.position);
-        float distPuppet = -1f;
-        if (Main.Multiplayer != null && Main.Multiplayer.OtherPlayerManager != null)
-        {
-            foreach (OtherPlayerScript player in Main.Multiplayer.OtherPlayerManager.AllActivePlayers)
-            {
-                if (player == null || !player.gameObject.activeInHierarchy) continue;
-                float d = Vector2.Distance((Vector2)_crawler.transform.position, (Vector2)player.transform.position);
-                if (distPuppet < 0f || d < distPuppet) distPuppet = d;
-            }
-        }
-
-        SharedDiagnosticLogger.Info($"[WaxPerceptionProbe] instance={_crawler.GetInstanceID()}, awake={behaviour.Awake}, melting={behaviour.Melting}, targetLost={behaviour.TargetLost}, playerSeen={behaviour.PlayerSeen}, playerHeard={behaviour.PlayerHeard}, entityTarget={DescribeTarget(_crawler.Target)}, behaviourTarget={DescribeTarget(behaviour.Target == null ? null : behaviour.Target.gameObject)}, visualColliding={(collisionSensor != null && collisionSensor.IsColliding())}, touched=[{touched}], hearingColliding={hearingColliding}, animator={animatorState}, distPenitent={distPenitent:0.00}, distPuppet={distPuppet:0.00}, seenLocal={localSeen}, seenRemote={remoteSeen}, sensorBounds={sensor.bounds}");
-    }
-
-    private static string DescribeTarget(GameObject target)
-    {
-        if (target == null) return "<null>";
-        if (Core.Logic.Penitent != null && target == Core.Logic.Penitent.gameObject) return "Penitent(local)";
-        if (target.GetComponent<OtherPlayerScript>() != null) return "OtherPlayer(remote)";
-        return target.name;
     }
 
     private void SetPlayerSeen(bool seen)

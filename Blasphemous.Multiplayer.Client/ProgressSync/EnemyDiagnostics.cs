@@ -38,6 +38,14 @@ internal static class EnemyDiagnostics
     // sync and the mirrored execution presentation are unaffected.
     internal const bool EnableWheelCarrierExecutionDiagnostics = false;
 
+    // Enemy-specific debuggers stay in the code for future bring-up rounds, but
+    // ship off. Flip the matching switch to reuse a stream when revisiting an
+    // enemy; this does not gate generic enemy sync/death/damage logging.
+    internal const bool EnableWaxCrawlerDiagnostics = false;
+    internal const bool EnableWheelCarrierStateDiagnostics = false;
+    internal const bool EnablePenitentVisibilityDiagnostics = false;
+    internal const bool EnableEnemyTierDiagnostics = false;
+
     internal static bool IsVerbose(Enemy enemy)
     {
         return enemy != null && IsVerbose(enemy.GetType().Name);

@@ -118,12 +118,12 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
             if (!_sensorMissingLogged)
             {
                 _sensorMissingLogged = true;
-                SharedDiagnosticLogger.Warn($"[WaxPerceptionDiag] Visual sensor unavailable on authority; perception drive inactive enemyInstance={_crawler.GetInstanceID()}");
+                if (EnemyDiagnostics.EnableWaxCrawlerDiagnostics) SharedDiagnosticLogger.Warn($"[WaxPerceptionDiag] Visual sensor unavailable on authority; perception drive inactive enemyInstance={_crawler.GetInstanceID()}");
             }
             return;
         }
         if (seen != wasSeen)
-            SharedDiagnosticLogger.Info($"[WaxPerceptionDiag] PlayerSeen -> {seen} (localSensor={localSeen}, remoteInSensor={remoteSeen}), enemyInstance={_crawler.GetInstanceID()}");
+            if (EnemyDiagnostics.EnableWaxCrawlerDiagnostics) SharedDiagnosticLogger.Info($"[WaxPerceptionDiag] PlayerSeen -> {seen} (localSensor={localSeen}, remoteInSensor={remoteSeen}), enemyInstance={_crawler.GetInstanceID()}");
 
         // The tree's wake branch gates on the sensor's touched-entity list,
         // which can only ever contain real Entity objects -- a puppet can
@@ -139,14 +139,14 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
         {
             _nextRiseDriveTime = Time.unscaledTime + 0.5f;
             _crawler.Behaviour.Rise();
-            SharedDiagnosticLogger.Info($"[WaxPerceptionDiag] Rise() driven by handler (localSeen={localSeen}, remoteSeen={remoteSeen}), enemyInstance={_crawler.GetInstanceID()}");
+            if (EnemyDiagnostics.EnableWaxCrawlerDiagnostics) SharedDiagnosticLogger.Info($"[WaxPerceptionDiag] Rise() driven by handler (localSeen={localSeen}, remoteSeen={remoteSeen}), enemyInstance={_crawler.GetInstanceID()}");
         }
 
         // Temporary diagnostic for the stuck-awake investigation: while the
         // authority crawler is awake (or a player is seen), sample the exact
         // inputs of the tree's Hide branch (Awake/Melting/TargetLost/CanMove)
         // plus the animator state, so a stuck run shows which gate is held.
-        if ((_crawler.Behaviour.Awake || seen) && Time.unscaledTime >= _nextStateLogTime)
+        if (EnemyDiagnostics.EnableWaxCrawlerDiagnostics && (_crawler.Behaviour.Awake || seen) && Time.unscaledTime >= _nextStateLogTime)
         {
             _nextStateLogTime = Time.unscaledTime + 0.5f;
             string animatorState = "<none>";

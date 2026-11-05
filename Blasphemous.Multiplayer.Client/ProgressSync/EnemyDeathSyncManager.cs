@@ -497,7 +497,7 @@ public static class EnemyDeathSyncManager
         // The executionable window is Enemy.StuntTime, counted by StuntBehaviour on the owner's
         // Execution prefab: logging the deadline next to the report is what makes it comparable
         // with the death timestamp on another client.
-        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Report send scene={sceneName}, spawn={spawnPointId}, generation={generation}, state={state}, source={source}, epoch={epoch}, observedRevision={observedRevision}, orientation={(byte)wheelCarrier.Status.Orientation}, stuntTime={(state == 2 ? wheelCarrier.StuntTime : 0f):0.000}, expiresIn={(state == 2 ? wheelCarrier.StuntTime : 0f):0.000}, life={wheelCarrier.Stats.Life.Current:0.###}, time={Time.realtimeSinceStartup:0.000}");
+        if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Report send scene={sceneName}, spawn={spawnPointId}, generation={generation}, state={state}, source={source}, epoch={epoch}, observedRevision={observedRevision}, orientation={(byte)wheelCarrier.Status.Orientation}, stuntTime={(state == 2 ? wheelCarrier.StuntTime : 0f):0.000}, expiresIn={(state == 2 ? wheelCarrier.StuntTime : 0f):0.000}, life={wheelCarrier.Stats.Life.Current:0.###}, time={Time.realtimeSinceStartup:0.000}");
         Main.Multiplayer.NetworkManager.SendEnemyStateReport(sceneName, spawnPointId, generation, epoch, observedRevision, state,
             (byte)wheelCarrier.Status.Orientation);
         SharedDiagnosticLogger.Info($"[WheelCarrierStateSync] Reported local state scene={sceneName}, spawn={spawnPointId}, generation={generation}, state={state}, epoch={epoch}");
@@ -506,7 +506,7 @@ public static class EnemyDeathSyncManager
     public static void ApplyRemoteWheelCarrierStateReport(string sourcePlayerName, string sceneName, string spawnPointId,
         int generation, long epoch, long observedRevision, byte state, byte orientation)
     {
-        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Host report received scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, state={state}, epoch={epoch}, observedRevision={observedRevision}, orientation={orientation}, time={Time.realtimeSinceStartup:0.000}");
+        if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Host report received scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, state={state}, epoch={epoch}, observedRevision={observedRevision}, orientation={orientation}, time={Time.realtimeSinceStartup:0.000}");
         string rejection = null;
         string hostName = null;
         long currentEpoch = -1;
@@ -529,7 +529,7 @@ public static class EnemyDeathSyncManager
 
         if (rejection != null)
         {
-            SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Host report rejected scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, state={state}, epoch={epoch}, observedRevision={observedRevision}, reason={rejection}, time={Time.realtimeSinceStartup:0.000}");
+            if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Host report rejected scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, state={state}, epoch={epoch}, observedRevision={observedRevision}, reason={rejection}, time={Time.realtimeSinceStartup:0.000}");
             return;
         }
 
@@ -537,7 +537,7 @@ public static class EnemyDeathSyncManager
             point.CreateEnemy();
         if (!(point.SpawnedEnemy is WheelCarrier wheelCarrier))
         {
-            SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Host report rejected scene={sceneName}, spawn={spawnPointId}, source={sourcePlayerName}, reason=spawned enemy is {point.SpawnedEnemy?.GetType().Name ?? "null"}");
+            if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Host report rejected scene={sceneName}, spawn={spawnPointId}, source={sourcePlayerName}, reason=spawned enemy is {point.SpawnedEnemy?.GetType().Name ?? "null"}");
             return;
         }
 
@@ -545,7 +545,7 @@ public static class EnemyDeathSyncManager
         WheelCarrierEnemySyncHandler handler = wheelCarrier.GetComponent<WheelCarrierEnemySyncHandler>();
         if (handler == null)
         {
-            SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Host report rejected scene={sceneName}, spawn={spawnPointId}, source={sourcePlayerName}, reason=sync handler missing");
+            if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Host report rejected scene={sceneName}, spawn={spawnPointId}, source={sourcePlayerName}, reason=sync handler missing");
             return;
         }
         byte currentState = handler.SpecialState;
@@ -554,11 +554,11 @@ public static class EnemyDeathSyncManager
             // Repeated reports are the host's liveness signal for the mirrored state;
             // they must not be dropped or the mirror looks unconfirmed forever.
             handler.ApplyRemoteSpecialState(state, orientation, sourcePlayerName, false);
-            SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Host report redundant scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, requestedState={state}, hostState={currentState}, epoch={epoch}, observedRevision={observedRevision}, hostRevision={GetRevision(sceneName, spawnPointId, generation, epoch)}, time={Time.realtimeSinceStartup:0.000}");
+            if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Host report redundant scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, requestedState={state}, hostState={currentState}, epoch={epoch}, observedRevision={observedRevision}, hostRevision={GetRevision(sceneName, spawnPointId, generation, epoch)}, time={Time.realtimeSinceStartup:0.000}");
             return;
         }
 
-        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Host applying report scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, beforeState={currentState}, requestedState={state}, epoch={epoch}, observedRevision={observedRevision}, hostRevision={GetRevision(sceneName, spawnPointId, generation, epoch)}, time={Time.realtimeSinceStartup:0.000}");
+        if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Host applying report scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, beforeState={currentState}, requestedState={state}, epoch={epoch}, observedRevision={observedRevision}, hostRevision={GetRevision(sceneName, spawnPointId, generation, epoch)}, time={Time.realtimeSinceStartup:0.000}");
         handler.ApplyRemoteSpecialState(state, orientation, sourcePlayerName, false);
         long revision = AdvanceRevision(sceneName, spawnPointId, generation, epoch, "WheelCarrier special-state transition");
         SharedDiagnosticLogger.Info($"[WheelCarrierStateSync] Host mirrors follower state (presentation only) scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, state={state}, epoch={epoch}, revision={revision}");

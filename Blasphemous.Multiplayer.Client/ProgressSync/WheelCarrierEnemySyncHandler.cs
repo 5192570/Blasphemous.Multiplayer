@@ -169,7 +169,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     {
         if (_parryRecoverySuppressionLogged) return;
         _parryRecoverySuppressionLogged = true;
-        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Suppressed native parry recovery on mirrored state enemyInstance={_wheelCarrier?.GetInstanceID()}, state={_specialState}, owner={DescribeMirrorOwner()}, time={Time.realtimeSinceStartup:0.000}");
+        if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Suppressed native parry recovery on mirrored state enemyInstance={_wheelCarrier?.GetInstanceID()}, state={_specialState}, owner={DescribeMirrorOwner()}, time={Time.realtimeSinceStartup:0.000}");
     }
 
     internal override void OnSyncUpdate()
@@ -194,7 +194,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
             }
             else if (_mirrorOwnerPresenceKnown)
             {
-                SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Mirror owner left the session; restoring presentation enemyInstance={_wheelCarrier?.GetInstanceID()}, owner={_mirrorOwner}, state={_specialState}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+                if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Mirror owner left the session; restoring presentation enemyInstance={_wheelCarrier?.GetInstanceID()}, owner={_mirrorOwner}, state={_specialState}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
                 RestoreAlivePresentation();
                 ClearSpecialState("mirror owner left session");
                 return;
@@ -206,14 +206,14 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         if (Time.unscaledTime - _lastMirrorConfirmedAt < MirrorUnconfirmedWarning || Time.unscaledTime < _nextMirrorWarning)
             return;
         _nextMirrorWarning = Time.unscaledTime + MirrorUnconfirmedWarning;
-        SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Mirror still unconfirmed after {(Time.unscaledTime - _lastMirrorConfirmedAt):0.0}s enemyInstance={_wheelCarrier?.GetInstanceID()}, state={_specialState}, owner={DescribeMirrorOwner()}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+        if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Mirror still unconfirmed after {(Time.unscaledTime - _lastMirrorConfirmedAt):0.0}s enemyInstance={_wheelCarrier?.GetInstanceID()}, state={_specialState}, owner={DescribeMirrorOwner()}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
     }
 
     /// <summary>Scene authority changed: a follower mirror can no longer be trusted.</summary>
     internal override void OnAuthorityContextChanged(string reason)
     {
         if (!_mirroringRemoteState) return;
-        SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Dropping mirror after authority change enemyInstance={_wheelCarrier?.GetInstanceID()}, state={_specialState}, owner={DescribeMirrorOwner()}, reason={reason}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+        if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Dropping mirror after authority change enemyInstance={_wheelCarrier?.GetInstanceID()}, state={_specialState}, owner={DescribeMirrorOwner()}, reason={reason}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
         RestoreAlivePresentation();
         ClearSpecialState("authority context changed: " + reason);
     }
@@ -226,7 +226,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         // A native transition means this client's Penitent just parried or executed the
         // enemy: ownership moves here, so drop any mirror before publishing the state.
         if (_mirroringRemoteState)
-            SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Local transition took ownership from mirror enemyInstance={_wheelCarrier.GetInstanceID()}, mirroredState={_specialState}, mirroredOwner={DescribeMirrorOwner()}, nativeState={state}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+            if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Local transition took ownership from mirror enemyInstance={_wheelCarrier.GetInstanceID()}, mirroredState={_specialState}, mirroredOwner={DescribeMirrorOwner()}, nativeState={state}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
 
         byte previousState = _specialState;
         _specialState = state;
@@ -271,7 +271,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         // riposte in progress).
         if (_specialState != 0 && !_mirroringRemoteState)
         {
-            SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Ignored authority state on locally owned transition enemyInstance={_wheelCarrier.GetInstanceID()}, localState={_specialState}, requested={state}, owner={ownerName}, age={(Time.unscaledTime - _specialStateChangedAt):0.000}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+            if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Ignored authority state on locally owned transition enemyInstance={_wheelCarrier.GetInstanceID()}, localState={_specialState}, requested={state}, owner={ownerName}, age={(Time.unscaledTime - _specialStateChangedAt):0.000}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
             return;
         }
 
@@ -280,7 +280,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         {
             // This used to drop the report silently, which made an owner-side regression to the
             // parry state indistinguishable from "the owner never said anything".
-            SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Ignored parry report while mirroring executionable enemyInstance={_wheelCarrier.GetInstanceID()}, heldFor={(Time.unscaledTime - _specialStateChangedAt):0.000}, owner={DescribeMirrorOwner()}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+            if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Ignored parry report while mirroring executionable enemyInstance={_wheelCarrier.GetInstanceID()}, heldFor={(Time.unscaledTime - _specialStateChangedAt):0.000}, owner={DescribeMirrorOwner()}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
             return;
         }
 
@@ -291,7 +291,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         bool echoOfLeftState = _specialState == 0 && _lastLeftLocalState != 0 && state == _lastLeftLocalState;
         if (!_mirroringRemoteState && echoOfLeftState && Time.unscaledTime - _specialStateChangedAt < LocalOwnershipGrace)
         {
-            SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Ignored echo of locally ended state enemyInstance={_wheelCarrier.GetInstanceID()}, leftState={_lastLeftLocalState}, requested={state}, age={(Time.unscaledTime - _specialStateChangedAt):0.000}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+            if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Ignored echo of locally ended state enemyInstance={_wheelCarrier.GetInstanceID()}, leftState={_lastLeftLocalState}, requested={state}, age={(Time.unscaledTime - _specialStateChangedAt):0.000}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
             return;
         }
 
@@ -315,7 +315,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
             _specialStateChangedAt = Time.unscaledTime;
             _lastMirrorConfirmedAt = Time.unscaledTime;
             ApplyMirrorPresentation();
-            SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Mirror apply (presentation only) enemyInstance={_wheelCarrier.GetInstanceID()}, before={before}, previousHeldFor={previousHeldFor:0.000}, state={state}, orientation={orientation}, owner={DescribeMirrorOwner()}, ownerIsAuthority={ownerIsAuthority}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+            if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Mirror apply (presentation only) enemyInstance={_wheelCarrier.GetInstanceID()}, before={before}, previousHeldFor={previousHeldFor:0.000}, state={state}, orientation={orientation}, owner={DescribeMirrorOwner()}, ownerIsAuthority={ownerIsAuthority}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
         }
         finally
         {
@@ -336,14 +336,14 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         OtherPlayerScript avatar = Main.Multiplayer.OtherPlayerManager.FindActivePlayer(ownerName);
         if (avatar == null)
         {
-            SharedDiagnosticLogger.Info($"[PenitentVisibilityDiag] Executor avatar not found owner={ownerName}, enemyInstance={_wheelCarrier?.GetInstanceID()}, time={Time.realtimeSinceStartup:0.000}");
+            if (EnemyDiagnostics.EnablePenitentVisibilityDiagnostics) SharedDiagnosticLogger.Info($"[PenitentVisibilityDiag] Executor avatar not found owner={ownerName}, enemyInstance={_wheelCarrier?.GetInstanceID()}, time={Time.realtimeSinceStartup:0.000}");
             return;
         }
 
         bool wasEnabled = avatar.PresentationVisible;
         avatar.SetPresentationVisible(false);
         _hiddenExecutionAvatar = ownerName;
-        SharedDiagnosticLogger.Info($"[PenitentVisibilityDiag] Hiding executor avatar owner={ownerName}, wasEnabled={wasEnabled}, enemyInstance={_wheelCarrier?.GetInstanceID()}, time={Time.realtimeSinceStartup:0.000}");
+        if (EnemyDiagnostics.EnablePenitentVisibilityDiagnostics) SharedDiagnosticLogger.Info($"[PenitentVisibilityDiag] Hiding executor avatar owner={ownerName}, wasEnabled={wasEnabled}, enemyInstance={_wheelCarrier?.GetInstanceID()}, time={Time.realtimeSinceStartup:0.000}");
     }
 
     private void RestoreExecutionOwnerAvatar(string reason)
@@ -357,12 +357,12 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         if (avatar == null)
         {
             // Scene change or disconnect: the avatar is gone, nothing to restore.
-            SharedDiagnosticLogger.Info($"[PenitentVisibilityDiag] Executor avatar already gone owner={ownerName}, reason={reason}, time={Time.realtimeSinceStartup:0.000}");
+            if (EnemyDiagnostics.EnablePenitentVisibilityDiagnostics) SharedDiagnosticLogger.Info($"[PenitentVisibilityDiag] Executor avatar already gone owner={ownerName}, reason={reason}, time={Time.realtimeSinceStartup:0.000}");
             return;
         }
 
         avatar.SetPresentationVisible(true);
-        SharedDiagnosticLogger.Info($"[PenitentVisibilityDiag] Restored executor avatar owner={ownerName}, reason={reason}, time={Time.realtimeSinceStartup:0.000}");
+        if (EnemyDiagnostics.EnablePenitentVisibilityDiagnostics) SharedDiagnosticLogger.Info($"[PenitentVisibilityDiag] Restored executor avatar owner={ownerName}, reason={reason}, time={Time.realtimeSinceStartup:0.000}");
     }
 
     /// <summary>
@@ -751,7 +751,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     {
         if (!IsMirroringRemoteSpecialState || _wheelCarrier == null || _wheelCarrier.Behaviour == null) return;
         ApplyMirrorPresentation();
-        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Re-asserted mirror after local damage enemyInstance={_wheelCarrier.GetInstanceID()}, state={_specialState}, owner={DescribeMirrorOwner()}, time={Time.realtimeSinceStartup:0.000}");
+        if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Re-asserted mirror after local damage enemyInstance={_wheelCarrier.GetInstanceID()}, state={_specialState}, owner={DescribeMirrorOwner()}, time={Time.realtimeSinceStartup:0.000}");
     }
 
     internal override void ApplySpecialState(byte state, string authorityName)
@@ -768,7 +768,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         // driving this enemy any more: a mirror cannot be maintained.
         if (authority && _mirroringRemoteState)
         {
-            SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Dropping mirror on authority transition enemyInstance={_wheelCarrier.GetInstanceID()}, state={_specialState}, owner={DescribeMirrorOwner()}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+            if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Dropping mirror on authority transition enemyInstance={_wheelCarrier.GetInstanceID()}, state={_specialState}, owner={DescribeMirrorOwner()}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
             RestoreAlivePresentation();
             ClearSpecialState("became authority");
         }
@@ -927,7 +927,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
 
         ClearSpecialState(reason);
         StartVisualWatch(reason);
-        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Death presentation cleanup enemyInstance={_wheelCarrier.GetInstanceID()}, reason={reason}, completedExecution={completedExecution}, clearedGotParry={wasParried}, layer={(enemyLayer >= 0 ? enemyLayer : -1)}, sprite={(_wheelCarrier.SpriteRenderer != null && _wheelCarrier.SpriteRenderer.enabled)}, dead={_wheelCarrier.Status.Dead}, lifeBefore={lifeBefore:0.###}, lifeAfter={(_wheelCarrier.Stats != null && _wheelCarrier.Stats.Life != null ? _wheelCarrier.Stats.Life.Current : -1f):0.###}, time={Time.realtimeSinceStartup:0.000}");
+        if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Death presentation cleanup enemyInstance={_wheelCarrier.GetInstanceID()}, reason={reason}, completedExecution={completedExecution}, clearedGotParry={wasParried}, layer={(enemyLayer >= 0 ? enemyLayer : -1)}, sprite={(_wheelCarrier.SpriteRenderer != null && _wheelCarrier.SpriteRenderer.enabled)}, dead={_wheelCarrier.Status.Dead}, lifeBefore={lifeBefore:0.###}, lifeAfter={(_wheelCarrier.Stats != null && _wheelCarrier.Stats.Life != null ? _wheelCarrier.Stats.Life.Current : -1f):0.###}, time={Time.realtimeSinceStartup:0.000}");
     }
 
     /// <summary>
@@ -1057,7 +1057,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     {
         if (_specialState == 0 && !_mirroringRemoteState) return;
 
-        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Clearing special state enemyInstance={_wheelCarrier?.GetInstanceID()}, state={_specialState}, mirrored={_mirroringRemoteState}, owner={DescribeMirrorOwner()}, heldFor={(Time.unscaledTime - _specialStateChangedAt):0.000}, reason={reason}, time={Time.realtimeSinceStartup:0.000}");
+        if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Clearing special state enemyInstance={_wheelCarrier?.GetInstanceID()}, state={_specialState}, mirrored={_mirroringRemoteState}, owner={DescribeMirrorOwner()}, heldFor={(Time.unscaledTime - _specialStateChangedAt):0.000}, reason={reason}, time={Time.realtimeSinceStartup:0.000}");
         _specialState = 0;
         _mirroringRemoteState = false;
         _mirrorOwner = string.Empty;
@@ -1172,7 +1172,7 @@ internal static class WheelCarrierDeadAliveGuardPatch
         int instanceId = wheelCarrier.GetInstanceID();
         if (logged.Count > 64) logged.Clear();
         if (logged.Add(instanceId))
-            SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Refused Alive() on a dead enemy enemyInstance={instanceId}, life={(wheelCarrier.Stats != null && wheelCarrier.Stats.Life != null ? wheelCarrier.Stats.Life.Current : -1f):0.###}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+            if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Refused Alive() on a dead enemy enemyInstance={instanceId}, life={(wheelCarrier.Stats != null && wheelCarrier.Stats.Life != null ? wheelCarrier.Stats.Life.Current : -1f):0.###}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
         return false;
     }
 }
@@ -1222,7 +1222,7 @@ internal static class WheelCarrierRemoteParryRecoveryPatch
         int instanceId = wheelCarrier.GetInstanceID();
         if (deadRecoveryLogged.Count > 64) deadRecoveryLogged.Clear();
         if (!deadRecoveryLogged.Add(instanceId)) return;
-        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Suppressed native parry recovery on a dead enemy enemyInstance={instanceId}, life={(wheelCarrier.Stats != null && wheelCarrier.Stats.Life != null ? wheelCarrier.Stats.Life.Current : -1f):0.###}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+        if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Suppressed native parry recovery on a dead enemy enemyInstance={instanceId}, life={(wheelCarrier.Stats != null && wheelCarrier.Stats.Life != null ? wheelCarrier.Stats.Life.Current : -1f):0.###}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
     }
 }
 

@@ -92,6 +92,8 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     // end arrives as a state report; this never restores presentation on its own.
     private const float ExecutionablePresentationMaxLifetime = 15f;
     private static bool _executionPrefabShapeLogged;
+    private static readonly System.Reflection.MethodInfo ExecutionFlipAnimation =
+        HarmonyLib.AccessTools.Method(typeof(Execution), "FlipAnimation", new[] { typeof(EntityOrientation) });
 
     // Diagnostics only: after a death we watch both hierarchies for a bounded window and log
     // every renderer/particle/animator that starts or stops drawing. This is how "which object
@@ -408,6 +410,24 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
             Execution interactable = _executionPresentation.GetComponentInChildren<Execution>(true);
             Animator prompt = ReadInteractableAnimator(interactable, "interactableAnimator");
             Animator interactor = _executionInteractorAnimator ?? ReadInteractableAnimator(interactable, "interactorAnimator");
+
+            // Vanilla OnUse calls FlipAnimation(PlayerDirection) before USED. The
+            // observer must use the owner's reported side, not its local player;
+            // ObjectOrientation alone only flips the prompt. Do this even when
+            // reusing the executionable clone, which predates the finisher report.
+            if (interactable != null && ExecutionFlipAnimation != null)
+            {
+                try
+                {
+                    ExecutionFlipAnimation.Invoke(interactable, new object[] { (EntityOrientation)side });
+                }
+                catch (Exception ex)
+                {
+                    if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics) SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Could not orient finisher enemyInstance={_wheelCarrier.GetInstanceID()}, side={side}, error={ex.GetType().Name}: {ex.Message}");
+                }
+            }
+            else if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics)
+                SharedDiagnosticLogger.Warn("[WheelCarrierExecutionDiag] Could not orient finisher: execution component or FlipAnimation missing");
 
             // Execution.OnUse hides the prompt art right before it starts the clip; until then that
             // art *is* the executionable presentation.

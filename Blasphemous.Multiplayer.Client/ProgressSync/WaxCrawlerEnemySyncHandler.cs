@@ -1,3 +1,4 @@
+using Framework.FrameworkCore;
 using Framework.Managers;
 using Gameplay.GameControllers.Enemies.WaxCrawler;
 using Gameplay.GameControllers.Entities;

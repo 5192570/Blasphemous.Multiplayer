@@ -27,6 +27,18 @@ public static class EnemyDeathSyncManager
     private static readonly Dictionary<string, PendingEnemyHealth> pendingEnemyHealth = new Dictionary<string, PendingEnemyHealth>();
     private static readonly Dictionary<string, List<PendingDamageReport>> pendingDamageReports = new Dictionary<string, List<PendingDamageReport>>();
     private static readonly Dictionary<string, int> pendingRemoteDeaths = new Dictionary<string, int>();
+
+    // Spawn-point identities are authored scene data: the points and their IDs do
+    // not change while a scene is loaded. They are therefore resolved once and
+    // cached, instead of rebuilding every identity string for every lookup.
+    // Snapshot reception is the hot path here (one lookup per packet per enemy),
+    // and the previous per-packet FindObjectsOfType + string-building scan was a
+    // steady source of follower-side GC pressure in enemy-dense scenes.
+    private static string spawnPointCacheScene;
+    private static readonly List<SpawnPointCacheEntry> spawnPointCache = new List<SpawnPointCacheEntry>();
+    private static readonly Dictionary<string, EnemySpawnPoint> spawnPointsByIdentity = new Dictionary<string, EnemySpawnPoint>();
+    private static readonly HashSet<string> ambiguousSpawnPointIds = new HashSet<string>();
+
     private static bool applyingRemoteDeath;
     private static bool applyingRemoteDamage;
     private static EnemyDamageContext activeLocalHitContext;
@@ -789,6 +801,10 @@ public static class EnemyDeathSyncManager
         pendingEnemyHealth.Clear();
         pendingRemoteDeaths.Clear();
         pendingDamageReports.Clear();
+        spawnPointCacheScene = null;
+        spawnPointCache.Clear();
+        spawnPointsByIdentity.Clear();
+        ambiguousSpawnPointIds.Clear();
         applyingRemoteDeath = false;
         applyingRemoteDamage = false;
         activeLocalHitContext = null;
@@ -864,54 +880,127 @@ public static class EnemyDeathSyncManager
         return sceneName + "::" + spawnPointId;
     }
 
-    private static bool TryFindSpawnPoint(string sceneName, Enemy enemy, out EnemySpawnPoint match, out string identity)
+    private sealed class SpawnPointCacheEntry
     {
-        match = null;
-        identity = null;
+        internal readonly EnemySpawnPoint Point;
+        internal readonly string Identity;
+
+        internal SpawnPointCacheEntry(EnemySpawnPoint point, string identity)
+        {
+            Point = point;
+            Identity = identity;
+        }
+    }
+
+    private static void EnsureSpawnPointCache(string sceneName, bool forceRebuild = false)
+    {
+        if (!forceRebuild && spawnPointCache.Count > 0 &&
+            string.Equals(spawnPointCacheScene, sceneName, StringComparison.Ordinal))
+        {
+            bool stale = false;
+            foreach (SpawnPointCacheEntry entry in spawnPointCache)
+            {
+                if (entry.Point == null)
+                {
+                    stale = true;
+                    break;
+                }
+            }
+            if (!stale) return;
+        }
+
+        spawnPointCache.Clear();
+        spawnPointsByIdentity.Clear();
+        ambiguousSpawnPointIds.Clear();
+        spawnPointCacheScene = sceneName;
+
         EnemySpawnPoint[] points = UnityEngine.Object.FindObjectsOfType<EnemySpawnPoint>();
         foreach (EnemySpawnPoint point in points)
         {
-            if (point == null || point.SpawnedEnemy != enemy)
+            if (point == null) continue;
+
+            string identity = BuildSpawnPointId(point);
+            spawnPointCache.Add(new SpawnPointCacheEntry(point, identity));
+            if (ambiguousSpawnPointIds.Contains(identity)) continue;
+            if (spawnPointsByIdentity.ContainsKey(identity))
+            {
+                spawnPointsByIdentity.Remove(identity);
+                ambiguousSpawnPointIds.Add(identity);
+                SharedDiagnosticLogger.Warn($"[EnemyDeathSync] Duplicate spawn identity in {sceneName}: {identity}");
+            }
+            else
+            {
+                spawnPointsByIdentity.Add(identity, point);
+            }
+        }
+    }
+
+    private static bool TryFindCachedSpawnPoint(Enemy enemy, out EnemySpawnPoint match, out string identity)
+    {
+        match = null;
+        identity = null;
+        foreach (SpawnPointCacheEntry entry in spawnPointCache)
+        {
+            if (entry.Point == null || entry.Point.SpawnedEnemy != enemy)
                 continue;
 
-            string candidate = BuildSpawnPointId(point);
-            int matches = 0;
-            foreach (EnemySpawnPoint other in points)
-            {
-                if (other != null && BuildSpawnPointId(other) == candidate)
-                    matches++;
-            }
-
-            if (matches != 1)
-            {
-                SharedDiagnosticLogger.Warn($"[EnemyDeathSync] Duplicate spawn identity in {sceneName}: {candidate}");
-                return false;
-            }
-
-            match = point;
-            identity = candidate;
+            match = entry.Point;
+            identity = entry.Identity;
             return true;
         }
         return false;
     }
 
+    private static bool TryFindSpawnPoint(string sceneName, Enemy enemy, out EnemySpawnPoint match, out string identity)
+    {
+        match = null;
+        identity = null;
+        if (enemy == null) return false;
+
+        EnsureSpawnPointCache(sceneName);
+        if (!TryFindCachedSpawnPoint(enemy, out match, out identity))
+        {
+            // A spawn point that appeared after the cache was built (late scene
+            // activation) gets one forced rebuild before the lookup gives up,
+            // matching the old rescan-every-time behaviour for that rare case.
+            EnsureSpawnPointCache(sceneName, true);
+            if (!TryFindCachedSpawnPoint(enemy, out match, out identity))
+                return false;
+        }
+
+        if (ambiguousSpawnPointIds.Contains(identity))
+        {
+            SharedDiagnosticLogger.Warn($"[EnemyDeathSync] Duplicate spawn identity in {sceneName}: {identity}");
+            match = null;
+            identity = null;
+            return false;
+        }
+        return true;
+    }
+
     private static bool TryFindSpawnPoint(string sceneName, string identity, out EnemySpawnPoint match)
     {
         match = null;
-        EnemySpawnPoint[] points = UnityEngine.Object.FindObjectsOfType<EnemySpawnPoint>();
-        foreach (EnemySpawnPoint point in points)
+        if (string.IsNullOrEmpty(identity)) return false;
+
+        EnsureSpawnPointCache(sceneName);
+        if (ambiguousSpawnPointIds.Contains(identity))
         {
-            if (point == null || BuildSpawnPointId(point) != identity)
-                continue;
-            if (match != null)
-            {
-                SharedDiagnosticLogger.Warn($"[EnemyDeathSync] Duplicate spawn identity in {sceneName}: {identity}");
-                match = null;
-                return false;
-            }
-            match = point;
+            SharedDiagnosticLogger.Warn($"[EnemyDeathSync] Duplicate spawn identity in {sceneName}: {identity}");
+            return false;
         }
-        return match != null;
+        if (spawnPointsByIdentity.TryGetValue(identity, out match) && match != null)
+            return true;
+
+        // Same late-appearance fallback as the by-enemy lookup.
+        match = null;
+        EnsureSpawnPointCache(sceneName, true);
+        if (ambiguousSpawnPointIds.Contains(identity))
+        {
+            SharedDiagnosticLogger.Warn($"[EnemyDeathSync] Duplicate spawn identity in {sceneName}: {identity}");
+            return false;
+        }
+        return spawnPointsByIdentity.TryGetValue(identity, out match) && match != null;
     }
 
     private static string BuildSpawnPointId(EnemySpawnPoint point)

@@ -45,7 +45,6 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
     private float _nextRiseDriveTime;
     private float _nextStateLogTime;
     private bool _sensorMissingLogged;
-    private bool _animatorCullingEnsured;
 
     // Shared senses plumbing (sight/hearing field drives + sensor contact
     // mirroring for remote players). This adapter's own perception policy is
@@ -63,22 +62,6 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
     internal override void OnSyncUpdate()
     {
         if (_crawler == null) return;
-
-        // The prefab's Animator uses CullCompletely (m_CullingMode: 2): Unity
-        // stops evaluating it entirely while off-camera. On the authority that
-        // freezes this enemy mid-Appear whenever the host player is elsewhere
-        // (Melting never clears, the tree idles, submerge never happens) even
-        // though a remote player is standing in the mud. A synced enemy's
-        // logic is animator-driven, so it must always animate.
-        if (!_animatorCullingEnsured)
-        {
-            Animator animator = _crawler.AnimatorInyector == null ? null : _crawler.AnimatorInyector.Animator;
-            if (animator != null)
-            {
-                animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
-                _animatorCullingEnsured = true;
-            }
-        }
 
         // The crawler has no NPCInputs to read walking from (unlike the Fool):
         // Chase() translates the transform directly, so actual displacement of the

@@ -21,6 +21,7 @@ public sealed class EnemySync : MonoBehaviour
 
     private EnemySyncHandler _handler;
     private Enemy _enemy;
+    private Animator _alwaysAnimateAnimator;
     private string _sceneName;
     private string _spawnPointId;
     private int _generation;
@@ -64,6 +65,17 @@ public sealed class EnemySync : MonoBehaviour
     private void Update()
     {
         if (_enemy == null || _handler == null) return;
+
+        // Synced enemy logic can depend on animation state callbacks, even when
+        // a remote player is outside the authority's camera. Retry if the
+        // animator is not initialized yet and handle a replaced reference.
+        Animator animator = _enemy.Animator;
+        if (animator != null && animator != _alwaysAnimateAnimator)
+        {
+            animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
+            _alwaysAnimateAnimator = animator;
+        }
+
         _handler.OnSyncUpdate();
         if (Main.Multiplayer == null || Main.Multiplayer.NetworkManager == null || !Main.Multiplayer.NetworkManager.IsConnected)
         {

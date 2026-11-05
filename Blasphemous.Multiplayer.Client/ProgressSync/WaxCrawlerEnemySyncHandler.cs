@@ -54,6 +54,7 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
     // against a failing one (follower in the mud) to find the input the
     // behaviour tree actually gates on. Remove once perception is solved.
     private float _nextProbeTime;
+    private float _nextRiseDriveTime;
     private bool _awakeObserved;
     private bool _sensorMissingLogged;
 
@@ -177,6 +178,23 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
         // PlayerSeen. Only puppets this handler added are ever removed.
         SyncSensorMirror(collisionSensor, sensor, _mirroredVisualObjects);
         DriveHearingPerception();
+
+        // The tree's wake branch gates on the sensor's touched-entity list,
+        // which can only ever contain real Entity objects -- a puppet can
+        // never satisfy it (probe steps 5c/5d: every other wake input matched
+        // the working host case, awake stayed false). The branch's only
+        // effect is calling Rise(), which is self-contained (Awake/Melting,
+        // sprite, animator; no blackboard state), so drive it directly while
+        // a player is seen and the crawler is asleep. Throttled: if the tree
+        // actively undoes it, these log lines repeating while seen proves it
+        // and the graph-extraction route is next.
+        if (seen && !_crawler.Behaviour.Awake && !_crawler.Status.Dead &&
+            Time.unscaledTime >= _nextRiseDriveTime)
+        {
+            _nextRiseDriveTime = Time.unscaledTime + 0.5f;
+            _crawler.Behaviour.Rise();
+            SharedDiagnosticLogger.Info($"[WaxPerceptionDiag] Rise() driven by handler (localSeen={localSeen}, remoteSeen={remoteSeen}), enemyInstance={_crawler.GetInstanceID()}");
+        }
 
         bool awakeFlip = _crawler.Behaviour.Awake != _awakeObserved;
         _awakeObserved = _crawler.Behaviour.Awake;

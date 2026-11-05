@@ -44,7 +44,24 @@ for them.
    The transition logs fired correctly (`PlayerSeen -> True`,
    `remoteInSensor=True`), yet no emerge — so the field alone is not the gate.
 
-3. **Probe (`1777a73`) + sensor mirroring (current, UNTESTED):** a 1 s
+3. **Probe (`1777a73`) + sensor mirroring (`4990f4f`, tested, necessary but
+   not sufficient):** the mirror landed (`visualColliding=True`,
+   `playerHeard=True`, submerge timing improved on the follower) yet with
+   P2 in the mud `awake` stayed false across all 31 remote-seen samples.
+   The only input still differing from the working case is
+   `touched=[<none>]` — the sensor's entity list, which can only contain
+   real `Entity` objects.
+
+4. **Handler-driven `Rise()` (current, UNTESTED):** vanilla check confirmed
+   `WaxCrawlerBehaviour.Rise()` is self-contained (sets `Awake`/`Melting`,
+   sprite on, animator speed 1, `Appear()`; no blackboard state), and
+   `Chase(Transform)` only null-checks its target. So while a player is
+   seen and the crawler is asleep/dead-free, the authority calls `Rise()`
+   directly (0.5 s throttle; repeated drive lines while seen would prove
+   the tree is undoing it, which is the trigger for graph extraction).
+   Historical description of the probe/mirror step:
+
+   A 1 s
    authority-side probe of all candidate wake inputs, run in both cases,
    gave a clean diff. Failing case (follower in mud): `playerSeen=True`,
    targets = puppet, but `visualColliding=False`, touched=`[<none>]`,

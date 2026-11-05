@@ -86,8 +86,8 @@ public sealed class EnemySync : MonoBehaviour
             {
                 _nextSnapshot = Time.unscaledTime + SnapshotInterval;
                 long snapshotRevision = EnemyDeathSyncManager.GetRevision(_sceneName, _spawnPointId, _generation, _authorityEpoch);
-                if (_handler is WheelCarrierEnemySyncHandler)
-                    SharedDiagnosticLogger.Info($"[WheelCarrierSnapshotDiag] Send scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, epoch={_authorityEpoch}, revision={snapshotRevision}, specialState={_handler.SpecialState}, time={Time.realtimeSinceStartup:0.000}");
+                if (EnemyDiagnostics.IsVerbose(_enemy))
+                    SharedDiagnosticLogger.Info($"[EnemySnapshotDiag] Send enemy={_enemy.GetType().Name}, scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, epoch={_authorityEpoch}, revision={snapshotRevision}, specialState={_handler.SpecialState}, time={Time.realtimeSinceStartup:0.000}");
                 Main.Multiplayer.NetworkManager.SendEnemyPosition(_sceneName, _spawnPointId, _generation, _authorityEpoch, snapshotRevision, _enemy.transform.position,
                     (byte)_enemy.Status.Orientation, (byte)_enemy.entityCurrentState, _handler.SpecialState, _handler.IsWalking, _enemy.Stats.Life.Current);
             }
@@ -131,12 +131,13 @@ public sealed class EnemySync : MonoBehaviour
     internal void ApplySnapshot(Vector3 position, byte orientation, byte state, byte specialState, bool walking, float currentHealth)
     {
         if (_isAuthority || _enemy == null || _handler == null) return;
-        if (_handler is WheelCarrierEnemySyncHandler wheelCarrierHandler)
-            SharedDiagnosticLogger.Info($"[WheelCarrierSnapshotDiag] Receive/apply scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, epoch={_authorityEpoch}, revision={_lastSnapshotRevision}, incomingSpecialState={specialState}, localSpecialStateBefore={wheelCarrierHandler.SpecialState}, time={Time.realtimeSinceStartup:0.000}");
+        bool verboseSnapshot = EnemyDiagnostics.IsVerbose(_enemy);
+        if (verboseSnapshot)
+            SharedDiagnosticLogger.Info($"[EnemySnapshotDiag] Receive/apply enemy={_enemy.GetType().Name}, scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, epoch={_authorityEpoch}, revision={_lastSnapshotRevision}, incomingSpecialState={specialState}, localSpecialStateBefore={_handler.SpecialState}, time={Time.realtimeSinceStartup:0.000}");
         _handler.ApplySnapshot(orientation, state, walking);
         _handler.ApplySpecialState(specialState, GetPreferredAuthorityName());
-        if (_handler is WheelCarrierEnemySyncHandler appliedWheelCarrierHandler)
-            SharedDiagnosticLogger.Info($"[WheelCarrierSnapshotDiag] Applied scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, epoch={_authorityEpoch}, revision={_lastSnapshotRevision}, incomingSpecialState={specialState}, localSpecialStateAfter={appliedWheelCarrierHandler.SpecialState}, time={Time.realtimeSinceStartup:0.000}");
+        if (verboseSnapshot)
+            SharedDiagnosticLogger.Info($"[EnemySnapshotDiag] Applied enemy={_enemy.GetType().Name}, scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, epoch={_authorityEpoch}, revision={_lastSnapshotRevision}, incomingSpecialState={specialState}, localSpecialStateAfter={_handler.SpecialState}, time={Time.realtimeSinceStartup:0.000}");
         ApplyHealth(currentHealth);
         _targetPosition = position;
         _hasSnapshot = true;

@@ -162,11 +162,6 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
             case PresentationHidden:
                 _crawler.AnimatorInyector.EnableSpriteRenderer = false;
                 _crawler.AnimatorInyector.AnimatorSpeed(0f);
-                // Vanilla Hide() uses a latched Animator trigger. Clear any
-                // unconsumed HIDE before freezing here; otherwise it can
-                // survive into the next Emerged state and immediately start
-                // Disappear even though the authority is still emerged.
-                if (animator != null) animator.ResetTrigger("HIDE");
                 if (changed) SetAttackable(false);
                 break;
 
@@ -175,24 +170,31 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
                 _crawler.AnimatorInyector.AnimatorSpeed(1f);
                 if (changed)
                 {
-                    // Appear() uses Animator.Play and does not clear triggers,
-                    // so remove a stale HIDE before replaying the emerge.
-                    if (animator != null) animator.ResetTrigger("HIDE");
                     _crawler.AnimatorInyector.Appear();
                     SetAttackable(true);
                 }
                 break;
 
             case PresentationSubmerging:
-                // Replay the vanilla submerge entry. The follower's own Disappear
-                // state behaviour then disables the damage collider and calls
-                // Asleep() at the end of the clip, exactly as on the authority;
-                // the position snap to origin arrives with the Hidden snapshot.
+                // Enter Disappear by state name rather than replaying Hide()'s
+                // HIDE trigger. The extracted AnimatorController showed the
+                // trigger is only consumed by the Crawling -> Disappear
+                // transition: a HIDE set while the follower is in Appear
+                // latches until Crawling (early submerge), and trigger timing
+                // races can leave the follower stuck in Crawling instead.
+                // Play() enters the state deterministically from anywhere,
+                // and the Disappear state behaviour still runs its vanilla
+                // side effects (damage collider off, Asleep() at clip end,
+                // return to origin); the Hidden snapshot follows from the
+                // authority as before.
                 _crawler.AnimatorInyector.EnableSpriteRenderer = true;
                 _crawler.AnimatorInyector.AnimatorSpeed(1f);
                 if (changed)
                 {
-                    _crawler.AnimatorInyector.Hide();
+                    if (animator != null)
+                        animator.Play("Disappear", 0, 0f);
+                    else
+                        _crawler.AnimatorInyector.Hide();
                     SetAttackable(false);
                 }
                 break;

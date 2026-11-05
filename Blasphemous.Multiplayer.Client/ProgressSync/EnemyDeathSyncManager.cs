@@ -27,6 +27,18 @@ public static class EnemyDeathSyncManager
     private static readonly Dictionary<string, PendingEnemyHealth> pendingEnemyHealth = new Dictionary<string, PendingEnemyHealth>();
     private static readonly Dictionary<string, List<PendingDamageReport>> pendingDamageReports = new Dictionary<string, List<PendingDamageReport>>();
     private static readonly Dictionary<string, int> pendingRemoteDeaths = new Dictionary<string, int>();
+
+    // Spawn-point identities are authored scene data: the points and their IDs do
+    // not change while a scene is loaded. They are therefore resolved once and
+    // cached, instead of rebuilding every identity string for every lookup.
+    // Snapshot reception is the hot path here (one lookup per packet per enemy),
+    // and the previous per-packet FindObjectsOfType + string-building scan was a
+    // steady source of follower-side GC pressure in enemy-dense scenes.
+    private static string spawnPointCacheScene;
+    private static readonly List<SpawnPointCacheEntry> spawnPointCache = new List<SpawnPointCacheEntry>();
+    private static readonly Dictionary<string, EnemySpawnPoint> spawnPointsByIdentity = new Dictionary<string, EnemySpawnPoint>();
+    private static readonly HashSet<string> ambiguousSpawnPointIds = new HashSet<string>();
+
     private static bool applyingRemoteDeath;
     private static bool applyingRemoteDamage;
     private static EnemyDamageContext activeLocalHitContext;
@@ -485,7 +497,7 @@ public static class EnemyDeathSyncManager
         // The executionable window is Enemy.StuntTime, counted by StuntBehaviour on the owner's
         // Execution prefab: logging the deadline next to the report is what makes it comparable
         // with the death timestamp on another client.
-        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Report send scene={sceneName}, spawn={spawnPointId}, generation={generation}, state={state}, source={source}, epoch={epoch}, observedRevision={observedRevision}, orientation={(byte)wheelCarrier.Status.Orientation}, stuntTime={(state == 2 ? wheelCarrier.StuntTime : 0f):0.000}, expiresIn={(state == 2 ? wheelCarrier.StuntTime : 0f):0.000}, life={wheelCarrier.Stats.Life.Current:0.###}, time={Time.realtimeSinceStartup:0.000}");
+        if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Report send scene={sceneName}, spawn={spawnPointId}, generation={generation}, state={state}, source={source}, epoch={epoch}, observedRevision={observedRevision}, orientation={(byte)wheelCarrier.Status.Orientation}, stuntTime={(state == 2 ? wheelCarrier.StuntTime : 0f):0.000}, expiresIn={(state == 2 ? wheelCarrier.StuntTime : 0f):0.000}, life={wheelCarrier.Stats.Life.Current:0.###}, time={Time.realtimeSinceStartup:0.000}");
         Main.Multiplayer.NetworkManager.SendEnemyStateReport(sceneName, spawnPointId, generation, epoch, observedRevision, state,
             (byte)wheelCarrier.Status.Orientation);
         SharedDiagnosticLogger.Info($"[WheelCarrierStateSync] Reported local state scene={sceneName}, spawn={spawnPointId}, generation={generation}, state={state}, epoch={epoch}");
@@ -494,7 +506,7 @@ public static class EnemyDeathSyncManager
     public static void ApplyRemoteWheelCarrierStateReport(string sourcePlayerName, string sceneName, string spawnPointId,
         int generation, long epoch, long observedRevision, byte state, byte orientation)
     {
-        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Host report received scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, state={state}, epoch={epoch}, observedRevision={observedRevision}, orientation={orientation}, time={Time.realtimeSinceStartup:0.000}");
+        if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Host report received scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, state={state}, epoch={epoch}, observedRevision={observedRevision}, orientation={orientation}, time={Time.realtimeSinceStartup:0.000}");
         string rejection = null;
         string hostName = null;
         long currentEpoch = -1;
@@ -517,7 +529,7 @@ public static class EnemyDeathSyncManager
 
         if (rejection != null)
         {
-            SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Host report rejected scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, state={state}, epoch={epoch}, observedRevision={observedRevision}, reason={rejection}, time={Time.realtimeSinceStartup:0.000}");
+            if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Host report rejected scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, state={state}, epoch={epoch}, observedRevision={observedRevision}, reason={rejection}, time={Time.realtimeSinceStartup:0.000}");
             return;
         }
 
@@ -525,7 +537,7 @@ public static class EnemyDeathSyncManager
             point.CreateEnemy();
         if (!(point.SpawnedEnemy is WheelCarrier wheelCarrier))
         {
-            SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Host report rejected scene={sceneName}, spawn={spawnPointId}, source={sourcePlayerName}, reason=spawned enemy is {point.SpawnedEnemy?.GetType().Name ?? "null"}");
+            if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Host report rejected scene={sceneName}, spawn={spawnPointId}, source={sourcePlayerName}, reason=spawned enemy is {point.SpawnedEnemy?.GetType().Name ?? "null"}");
             return;
         }
 
@@ -533,7 +545,7 @@ public static class EnemyDeathSyncManager
         WheelCarrierEnemySyncHandler handler = wheelCarrier.GetComponent<WheelCarrierEnemySyncHandler>();
         if (handler == null)
         {
-            SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Host report rejected scene={sceneName}, spawn={spawnPointId}, source={sourcePlayerName}, reason=sync handler missing");
+            if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Warn($"[WheelCarrierStateDiag] Host report rejected scene={sceneName}, spawn={spawnPointId}, source={sourcePlayerName}, reason=sync handler missing");
             return;
         }
         byte currentState = handler.SpecialState;
@@ -542,11 +554,11 @@ public static class EnemyDeathSyncManager
             // Repeated reports are the host's liveness signal for the mirrored state;
             // they must not be dropped or the mirror looks unconfirmed forever.
             handler.ApplyRemoteSpecialState(state, orientation, sourcePlayerName, false);
-            SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Host report redundant scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, requestedState={state}, hostState={currentState}, epoch={epoch}, observedRevision={observedRevision}, hostRevision={GetRevision(sceneName, spawnPointId, generation, epoch)}, time={Time.realtimeSinceStartup:0.000}");
+            if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Host report redundant scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, requestedState={state}, hostState={currentState}, epoch={epoch}, observedRevision={observedRevision}, hostRevision={GetRevision(sceneName, spawnPointId, generation, epoch)}, time={Time.realtimeSinceStartup:0.000}");
             return;
         }
 
-        SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Host applying report scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, beforeState={currentState}, requestedState={state}, epoch={epoch}, observedRevision={observedRevision}, hostRevision={GetRevision(sceneName, spawnPointId, generation, epoch)}, time={Time.realtimeSinceStartup:0.000}");
+        if (EnemyDiagnostics.EnableWheelCarrierStateDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierStateDiag] Host applying report scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, beforeState={currentState}, requestedState={state}, epoch={epoch}, observedRevision={observedRevision}, hostRevision={GetRevision(sceneName, spawnPointId, generation, epoch)}, time={Time.realtimeSinceStartup:0.000}");
         handler.ApplyRemoteSpecialState(state, orientation, sourcePlayerName, false);
         long revision = AdvanceRevision(sceneName, spawnPointId, generation, epoch, "WheelCarrier special-state transition");
         SharedDiagnosticLogger.Info($"[WheelCarrierStateSync] Host mirrors follower state (presentation only) scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, state={state}, epoch={epoch}, revision={revision}");
@@ -573,13 +585,13 @@ public static class EnemyDeathSyncManager
         // client that can answer this: PlayerDirection is measured against the local Penitent,
         // and an observer's Penitent is not the one performing the finisher.
         byte side = (byte)execution.PlayerDirection;
-        SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Report send scene={sceneName}, spawn={spawnPointId}, generation={generation}, epoch={epoch}, side={side}, enemyInstance={wheelCarrier.GetInstanceID()}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+        if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Report send scene={sceneName}, spawn={spawnPointId}, generation={generation}, epoch={epoch}, side={side}, enemyInstance={wheelCarrier.GetInstanceID()}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
         Main.Multiplayer.NetworkManager.SendEnemyExecutionStarted(sceneName, spawnPointId, generation, epoch, side);
     }
 
     public static void ApplyRemoteExecutionStarted(string sourcePlayerName, string sceneName, string spawnPointId, int generation, long epoch, byte side)
     {
-        SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Report received scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, epoch={epoch}, side={side}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+        if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Report received scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, epoch={epoch}, side={side}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
         string rejection = null;
         EnemySpawnPoint point = null;
         if (string.IsNullOrEmpty(sourcePlayerName) || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
@@ -598,13 +610,13 @@ public static class EnemyDeathSyncManager
 
         if (rejection != null)
         {
-            SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Report rejected scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, side={side}, reason={rejection}, time={Time.realtimeSinceStartup:0.000}");
+            if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics) SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Report rejected scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, side={side}, reason={rejection}, time={Time.realtimeSinceStartup:0.000}");
             return;
         }
 
         if (!(point.SpawnedEnemy is WheelCarrier wheelCarrier))
         {
-            SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Report rejected scene={sceneName}, spawn={spawnPointId}, source={sourcePlayerName}, reason=spawned enemy is {point.SpawnedEnemy?.GetType().Name ?? "null"}");
+            if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics) SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Report rejected scene={sceneName}, spawn={spawnPointId}, source={sourcePlayerName}, reason=spawned enemy is {point.SpawnedEnemy?.GetType().Name ?? "null"}");
             return;
         }
 
@@ -612,7 +624,7 @@ public static class EnemyDeathSyncManager
         WheelCarrierEnemySyncHandler handler = wheelCarrier.GetComponent<WheelCarrierEnemySyncHandler>();
         if (handler == null)
         {
-            SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Report rejected scene={sceneName}, spawn={spawnPointId}, source={sourcePlayerName}, reason=sync handler missing");
+            if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics) SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Report rejected scene={sceneName}, spawn={spawnPointId}, source={sourcePlayerName}, reason=sync handler missing");
             return;
         }
 
@@ -652,6 +664,11 @@ public static class EnemyDeathSyncManager
     internal static bool TryTakePendingRemoteHealth(Enemy enemy, int generation, out float currentHealth)
     {
         currentHealth = 0f;
+        // This is polled every frame by every follower EnemySync, and resolving the
+        // identity costs a scene-wide spawn-point scan. Pending health only exists
+        // between a snapshot packet landing and the next snapshot applying, so the
+        // empty case (virtually every frame) must not pay for the scan.
+        if (pendingEnemyHealth.Count == 0) return false;
         if (!EnemySyncManager.Supports(enemy) || !TryGetSyncIdentity(enemy, out string sceneName, out string spawnPointId, out int currentGeneration) ||
             currentGeneration != generation) return false;
 
@@ -784,6 +801,10 @@ public static class EnemyDeathSyncManager
         pendingEnemyHealth.Clear();
         pendingRemoteDeaths.Clear();
         pendingDamageReports.Clear();
+        spawnPointCacheScene = null;
+        spawnPointCache.Clear();
+        spawnPointsByIdentity.Clear();
+        ambiguousSpawnPointIds.Clear();
         applyingRemoteDeath = false;
         applyingRemoteDamage = false;
         activeLocalHitContext = null;
@@ -859,54 +880,127 @@ public static class EnemyDeathSyncManager
         return sceneName + "::" + spawnPointId;
     }
 
-    private static bool TryFindSpawnPoint(string sceneName, Enemy enemy, out EnemySpawnPoint match, out string identity)
+    private sealed class SpawnPointCacheEntry
     {
-        match = null;
-        identity = null;
+        internal readonly EnemySpawnPoint Point;
+        internal readonly string Identity;
+
+        internal SpawnPointCacheEntry(EnemySpawnPoint point, string identity)
+        {
+            Point = point;
+            Identity = identity;
+        }
+    }
+
+    private static void EnsureSpawnPointCache(string sceneName, bool forceRebuild = false)
+    {
+        if (!forceRebuild && spawnPointCache.Count > 0 &&
+            string.Equals(spawnPointCacheScene, sceneName, StringComparison.Ordinal))
+        {
+            bool stale = false;
+            foreach (SpawnPointCacheEntry entry in spawnPointCache)
+            {
+                if (entry.Point == null)
+                {
+                    stale = true;
+                    break;
+                }
+            }
+            if (!stale) return;
+        }
+
+        spawnPointCache.Clear();
+        spawnPointsByIdentity.Clear();
+        ambiguousSpawnPointIds.Clear();
+        spawnPointCacheScene = sceneName;
+
         EnemySpawnPoint[] points = UnityEngine.Object.FindObjectsOfType<EnemySpawnPoint>();
         foreach (EnemySpawnPoint point in points)
         {
-            if (point == null || point.SpawnedEnemy != enemy)
+            if (point == null) continue;
+
+            string identity = BuildSpawnPointId(point);
+            spawnPointCache.Add(new SpawnPointCacheEntry(point, identity));
+            if (ambiguousSpawnPointIds.Contains(identity)) continue;
+            if (spawnPointsByIdentity.ContainsKey(identity))
+            {
+                spawnPointsByIdentity.Remove(identity);
+                ambiguousSpawnPointIds.Add(identity);
+                SharedDiagnosticLogger.Warn($"[EnemyDeathSync] Duplicate spawn identity in {sceneName}: {identity}");
+            }
+            else
+            {
+                spawnPointsByIdentity.Add(identity, point);
+            }
+        }
+    }
+
+    private static bool TryFindCachedSpawnPoint(Enemy enemy, out EnemySpawnPoint match, out string identity)
+    {
+        match = null;
+        identity = null;
+        foreach (SpawnPointCacheEntry entry in spawnPointCache)
+        {
+            if (entry.Point == null || entry.Point.SpawnedEnemy != enemy)
                 continue;
 
-            string candidate = BuildSpawnPointId(point);
-            int matches = 0;
-            foreach (EnemySpawnPoint other in points)
-            {
-                if (other != null && BuildSpawnPointId(other) == candidate)
-                    matches++;
-            }
-
-            if (matches != 1)
-            {
-                SharedDiagnosticLogger.Warn($"[EnemyDeathSync] Duplicate spawn identity in {sceneName}: {candidate}");
-                return false;
-            }
-
-            match = point;
-            identity = candidate;
+            match = entry.Point;
+            identity = entry.Identity;
             return true;
         }
         return false;
     }
 
+    private static bool TryFindSpawnPoint(string sceneName, Enemy enemy, out EnemySpawnPoint match, out string identity)
+    {
+        match = null;
+        identity = null;
+        if (enemy == null) return false;
+
+        EnsureSpawnPointCache(sceneName);
+        if (!TryFindCachedSpawnPoint(enemy, out match, out identity))
+        {
+            // A spawn point that appeared after the cache was built (late scene
+            // activation) gets one forced rebuild before the lookup gives up,
+            // matching the old rescan-every-time behaviour for that rare case.
+            EnsureSpawnPointCache(sceneName, true);
+            if (!TryFindCachedSpawnPoint(enemy, out match, out identity))
+                return false;
+        }
+
+        if (ambiguousSpawnPointIds.Contains(identity))
+        {
+            SharedDiagnosticLogger.Warn($"[EnemyDeathSync] Duplicate spawn identity in {sceneName}: {identity}");
+            match = null;
+            identity = null;
+            return false;
+        }
+        return true;
+    }
+
     private static bool TryFindSpawnPoint(string sceneName, string identity, out EnemySpawnPoint match)
     {
         match = null;
-        EnemySpawnPoint[] points = UnityEngine.Object.FindObjectsOfType<EnemySpawnPoint>();
-        foreach (EnemySpawnPoint point in points)
+        if (string.IsNullOrEmpty(identity)) return false;
+
+        EnsureSpawnPointCache(sceneName);
+        if (ambiguousSpawnPointIds.Contains(identity))
         {
-            if (point == null || BuildSpawnPointId(point) != identity)
-                continue;
-            if (match != null)
-            {
-                SharedDiagnosticLogger.Warn($"[EnemyDeathSync] Duplicate spawn identity in {sceneName}: {identity}");
-                match = null;
-                return false;
-            }
-            match = point;
+            SharedDiagnosticLogger.Warn($"[EnemyDeathSync] Duplicate spawn identity in {sceneName}: {identity}");
+            return false;
         }
-        return match != null;
+        if (spawnPointsByIdentity.TryGetValue(identity, out match) && match != null)
+            return true;
+
+        // Same late-appearance fallback as the by-enemy lookup.
+        match = null;
+        EnsureSpawnPointCache(sceneName, true);
+        if (ambiguousSpawnPointIds.Contains(identity))
+        {
+            SharedDiagnosticLogger.Warn($"[EnemyDeathSync] Duplicate spawn identity in {sceneName}: {identity}");
+            return false;
+        }
+        return spawnPointsByIdentity.TryGetValue(identity, out match) && match != null;
     }
 
     private static string BuildSpawnPointId(EnemySpawnPoint point)

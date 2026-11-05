@@ -63,31 +63,11 @@ namespace Blasphemous.Multiplayer.Client
         }
     }
 
-    [HarmonyPatch(typeof(EnemySpawnPoint), "CreateEnemy")]
-    internal static class EnemySpawnPointConsumedCheckDiagnostics_Patch
-    {
-        [HarmonyPostfix]
-        private static void Postfix(EnemySpawnPoint __instance)
-        {
-            if (__instance != null)
-            {
-                EnemySpawnDiagnostics.Write($"CreateEnemy:consumption-check-completed position={__instance.transform.position}");
-            }
-        }
-    }
-
-    // EnemySpawner has two overloads: IsSpawnerConsumed(string) and
-    // IsSpawnerConsumed(EnemySpawnPoint). Explicitly select the latter.
-    [HarmonyPatch(typeof(EnemySpawner), "IsSpawnerConsumed", new Type[] { typeof(EnemySpawnPoint) })]
-    internal static class EnemySpawnerIsSpawnerConsumedDiagnostics_Patch
-    {
-        [HarmonyPostfix]
-        private static void Postfix(EnemySpawnPoint __0, bool __result)
-        {
-            string position = __0 == null ? "[null]" : __0.transform.position.ToString();
-            EnemySpawnDiagnostics.Write($"IsSpawnerConsumed:result position={position}, result={__result}");
-        }
-    }
+    // Streamlined: the former per-call patches (a consumption-check line after every
+    // CreateEnemy, and a log of every IsSpawnerConsumed result) are removed. They were
+    // the noisiest part of this file and the spawn-consumption questions they answered
+    // are settled. What remains is one before/after pair per spawn/death event, still
+    // gated off by default via EnemyDiagnostics.LogSpawnDiagnostics.
 
     [HarmonyPatch(typeof(EnemySpawner), "RespawnDeadEnemies")]
     internal static class EnemySpawnerRespawnDiagnostics_Patch
@@ -109,6 +89,12 @@ namespace Blasphemous.Multiplayer.Client
     {
         internal static void Write(string message)
         {
+            // Opt-in only (EnemyDiagnostics.LogSpawnDiagnostics): the patched
+            // methods fire per spawn/consumption check, so this is a burst of
+            // log writes around every scene load for no benefit by default.
+            if (!ProgressSync.EnemyDiagnostics.LogSpawnDiagnostics)
+                return;
+
             // UTC keeps timestamps directly comparable between the two players' logs.
             SharedDiagnosticLogger.Info($"[EnemySpawnDiagnostics] {DateTime.UtcNow:yyyy-MM-ddTHH:mm:ss.fffZ} {message}");
         }

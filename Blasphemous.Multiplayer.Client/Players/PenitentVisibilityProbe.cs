@@ -1,4 +1,5 @@
 using Blasphemous.Multiplayer.Client.Network;
+using Blasphemous.Multiplayer.Client.ProgressSync;
 using Framework.Managers;
 using Gameplay.GameControllers.Penitent;
 using UnityEngine;
@@ -23,6 +24,8 @@ namespace Blasphemous.Multiplayer.Client.Players
 
         internal static void Tick()
         {
+            if (!EnemyDiagnostics.EnablePenitentVisibilityDiagnostics) return;
+
             Penitent penitent = Core.Logic != null ? Core.Logic.Penitent : null;
             if (penitent == null || penitent.SpriteRenderer == null) return;
 

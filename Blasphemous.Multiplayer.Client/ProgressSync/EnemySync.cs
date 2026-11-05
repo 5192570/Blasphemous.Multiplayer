@@ -14,11 +14,14 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync;
 public sealed class EnemySync : MonoBehaviour
 {
     private const float SnapshotInterval = 0.08f;
+    private const float SnapshotHeartbeatInterval = 0.5f;
+    private const float SnapshotPositionEpsilonSqr = 0.0001f;
     private const float IdentityRefreshInterval = 0.5f;
     private const float PeerSnapshotTimeout = 1f;
 
     private EnemySyncHandler _handler;
     private Enemy _enemy;
+    private Animator _alwaysAnimateAnimator;
     private string _sceneName;
     private string _spawnPointId;
     private int _generation;
@@ -39,6 +42,18 @@ public sealed class EnemySync : MonoBehaviour
     private string _lastAuthorityDiagnosticState;
     private float _nextAuthorityDiagnostic;
 
+    // Last snapshot actually transmitted by this authority copy. Unchanged
+    // snapshots are suppressed (see Update): a dormant enemy costs one
+    // heartbeat per SnapshotHeartbeatInterval instead of 12.5 packets/second.
+    private bool _hasSentSnapshot;
+    private float _lastSnapshotSentTime = float.NegativeInfinity;
+    private Vector3 _lastSentPosition;
+    private byte _lastSentOrientation;
+    private byte _lastSentState;
+    private byte _lastSentSpecialState;
+    private bool _lastSentWalking;
+    private float _lastSentHealth;
+
     internal void Attach(EnemySyncHandler handler)
     {
         if (handler == null || handler.Enemy == null) return;
@@ -50,6 +65,17 @@ public sealed class EnemySync : MonoBehaviour
     private void Update()
     {
         if (_enemy == null || _handler == null) return;
+
+        // Synced enemy logic can depend on animation state callbacks, even when
+        // a remote player is outside the authority's camera. Retry if the
+        // animator is not initialized yet and handle a replaced reference.
+        Animator animator = _enemy.Animator;
+        if (animator != null && animator != _alwaysAnimateAnimator)
+        {
+            animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
+            _alwaysAnimateAnimator = animator;
+        }
+
         _handler.OnSyncUpdate();
         if (Main.Multiplayer == null || Main.Multiplayer.NetworkManager == null || !Main.Multiplayer.NetworkManager.IsConnected)
         {
@@ -57,7 +83,11 @@ public sealed class EnemySync : MonoBehaviour
             return;
         }
 
-        if (Time.unscaledTime >= _nextIdentityRefresh)
+        // Identity is static for the lifetime of a spawned enemy, so once it has
+        // resolved there is nothing to re-resolve. Only unresolved enemies keep
+        // retrying (attach can race the spawn point's SpawnedEnemy assignment).
+        if ((string.IsNullOrEmpty(_sceneName) || string.IsNullOrEmpty(_spawnPointId) || _generation < 0) &&
+            Time.unscaledTime >= _nextIdentityRefresh)
         {
             _nextIdentityRefresh = Time.unscaledTime + IdentityRefreshInterval;
             RefreshIdentity();
@@ -74,6 +104,7 @@ public sealed class EnemySync : MonoBehaviour
 
         bool epochChanged = _authorityEpoch != epoch;
         _authorityEpoch = epoch;
+        if (epochChanged) _hasSentSnapshot = false;
         SetAuthority(string.Equals(Main.Multiplayer.PlayerName, hostName, StringComparison.Ordinal));
         if (epochChanged && !_isAuthority) ResetFollowerSnapshotBaseline("authority epoch changed");
         // A new authority namespace invalidates presentation copied from the previous one.
@@ -85,11 +116,44 @@ public sealed class EnemySync : MonoBehaviour
             if (Time.unscaledTime >= _nextSnapshot)
             {
                 _nextSnapshot = Time.unscaledTime + SnapshotInterval;
-                long snapshotRevision = EnemyDeathSyncManager.GetRevision(_sceneName, _spawnPointId, _generation, _authorityEpoch);
-                if (_handler is WheelCarrierEnemySyncHandler)
-                    SharedDiagnosticLogger.Info($"[WheelCarrierSnapshotDiag] Send scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, epoch={_authorityEpoch}, revision={snapshotRevision}, specialState={_handler.SpecialState}, time={Time.realtimeSinceStartup:0.000}");
-                Main.Multiplayer.NetworkManager.SendEnemyPosition(_sceneName, _spawnPointId, _generation, _authorityEpoch, snapshotRevision, _enemy.transform.position,
-                    (byte)_enemy.Status.Orientation, (byte)_enemy.entityCurrentState, _handler.SpecialState, _handler.IsWalking, _enemy.Stats.Life.Current);
+
+                Vector3 position = _enemy.transform.position;
+                byte orientation = (byte)_enemy.Status.Orientation;
+                byte state = (byte)_enemy.entityCurrentState;
+                byte specialState = _handler.SpecialState;
+                bool walking = _handler.IsWalking;
+                float currentHealth = _enemy.Stats.Life.Current;
+
+                // Suppress snapshots in which nothing a follower can observe has
+                // changed. Moving or acting enemies still send at the full rate
+                // (per-tick displacement while moving far exceeds the epsilon);
+                // dormant enemies fall back to the heartbeat so followers can
+                // still tell the authority is publishing.
+                bool changed = !_hasSentSnapshot ||
+                    (position - _lastSentPosition).sqrMagnitude > SnapshotPositionEpsilonSqr ||
+                    orientation != _lastSentOrientation ||
+                    state != _lastSentState ||
+                    specialState != _lastSentSpecialState ||
+                    walking != _lastSentWalking ||
+                    currentHealth != _lastSentHealth;
+                bool heartbeatDue = Time.unscaledTime - _lastSnapshotSentTime >= SnapshotHeartbeatInterval;
+                if (changed || heartbeatDue)
+                {
+                    long snapshotRevision = EnemyDeathSyncManager.GetRevision(_sceneName, _spawnPointId, _generation, _authorityEpoch);
+                    if (EnemyDiagnostics.IsVerbose(_enemy))
+                        SharedDiagnosticLogger.Info($"[EnemySnapshotDiag] Send enemy={_enemy.GetType().Name}, scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, epoch={_authorityEpoch}, revision={snapshotRevision}, specialState={specialState}, time={Time.realtimeSinceStartup:0.000}");
+                    Main.Multiplayer.NetworkManager.SendEnemyPosition(_sceneName, _spawnPointId, _generation, _authorityEpoch, snapshotRevision, position,
+                        orientation, state, specialState, walking, currentHealth);
+
+                    _hasSentSnapshot = true;
+                    _lastSnapshotSentTime = Time.unscaledTime;
+                    _lastSentPosition = position;
+                    _lastSentOrientation = orientation;
+                    _lastSentState = state;
+                    _lastSentSpecialState = specialState;
+                    _lastSentWalking = walking;
+                    _lastSentHealth = currentHealth;
+                }
             }
         }
         else if (!_isAuthority)
@@ -131,12 +195,13 @@ public sealed class EnemySync : MonoBehaviour
     internal void ApplySnapshot(Vector3 position, byte orientation, byte state, byte specialState, bool walking, float currentHealth)
     {
         if (_isAuthority || _enemy == null || _handler == null) return;
-        if (_handler is WheelCarrierEnemySyncHandler wheelCarrierHandler)
-            SharedDiagnosticLogger.Info($"[WheelCarrierSnapshotDiag] Receive/apply scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, epoch={_authorityEpoch}, revision={_lastSnapshotRevision}, incomingSpecialState={specialState}, localSpecialStateBefore={wheelCarrierHandler.SpecialState}, time={Time.realtimeSinceStartup:0.000}");
+        bool verboseSnapshot = EnemyDiagnostics.IsVerbose(_enemy);
+        if (verboseSnapshot)
+            SharedDiagnosticLogger.Info($"[EnemySnapshotDiag] Receive/apply enemy={_enemy.GetType().Name}, scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, epoch={_authorityEpoch}, revision={_lastSnapshotRevision}, incomingSpecialState={specialState}, localSpecialStateBefore={_handler.SpecialState}, time={Time.realtimeSinceStartup:0.000}");
         _handler.ApplySnapshot(orientation, state, walking);
         _handler.ApplySpecialState(specialState, GetPreferredAuthorityName());
-        if (_handler is WheelCarrierEnemySyncHandler appliedWheelCarrierHandler)
-            SharedDiagnosticLogger.Info($"[WheelCarrierSnapshotDiag] Applied scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, epoch={_authorityEpoch}, revision={_lastSnapshotRevision}, incomingSpecialState={specialState}, localSpecialStateAfter={appliedWheelCarrierHandler.SpecialState}, time={Time.realtimeSinceStartup:0.000}");
+        if (verboseSnapshot)
+            SharedDiagnosticLogger.Info($"[EnemySnapshotDiag] Applied enemy={_enemy.GetType().Name}, scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, epoch={_authorityEpoch}, revision={_lastSnapshotRevision}, incomingSpecialState={specialState}, localSpecialStateAfter={_handler.SpecialState}, time={Time.realtimeSinceStartup:0.000}");
         ApplyHealth(currentHealth);
         _targetPosition = position;
         _hasSnapshot = true;
@@ -161,7 +226,14 @@ public sealed class EnemySync : MonoBehaviour
             _sceneName = null; _spawnPointId = null; _generation = -1;
         }
         string currentIdentity = _sceneName + "::" + _spawnPointId + "::" + _generation;
-        if (previousIdentity != currentIdentity && !_isAuthority) ResetFollowerSnapshotBaseline("enemy identity changed");
+        if (previousIdentity != currentIdentity)
+        {
+            // A new identity is a new incarnation: followers must not keep posing
+            // it from the previous one's snapshots, and an authority copy must
+            // publish a fresh first snapshot for it.
+            _hasSentSnapshot = false;
+            if (!_isAuthority) ResetFollowerSnapshotBaseline("enemy identity changed");
+        }
     }
 
  
@@ -193,11 +265,14 @@ public sealed class EnemySync : MonoBehaviour
         string localName = Main.Multiplayer == null ? "<offline>" : Main.Multiplayer.PlayerName;
         string preferredName = Main.Multiplayer == null ? "<offline>" : GetPreferredAuthorityName();
         bool peerPublishing = _lastPeerSnapshotGeneration == _generation && Time.unscaledTime - _lastPeerSnapshot < PeerSnapshotTimeout;
-        string state = $"local={localName}|preferred={preferredName}|authority={_isAuthority}|epoch={_authorityEpoch}|peerPublishing={peerPublishing}|peers={DescribePeers()}";
+        // The peer list is deliberately NOT part of the change key: it contains
+        // peer scene names, so any peer travelling re-logged the identical
+        // authority state once per synced enemy. Peers are still printed.
+        string state = $"local={localName}|preferred={preferredName}|authority={_isAuthority}|epoch={_authorityEpoch}|peerPublishing={peerPublishing}";
         if (state == _lastAuthorityDiagnosticState) return;
 
         _lastAuthorityDiagnosticState = state;
-        SharedDiagnosticLogger.Info($"[EnemySyncDiag] Authority context changed scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, enemyInstance={_enemy?.GetInstanceID()}, {state}");
+        SharedDiagnosticLogger.Info($"[EnemySyncDiag] Authority context changed scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, enemyInstance={_enemy?.GetInstanceID()}, {state}, peers={DescribePeers()}");
     }
 
  
@@ -209,7 +284,11 @@ public sealed class EnemySync : MonoBehaviour
         _handler.SetAuthority(authority);
         _committedTarget = null;
         _targetCommitmentUntil = 0f;
-        if (authority) _hasSnapshot = false;
+        if (authority)
+        {
+            _hasSnapshot = false;
+            _hasSentSnapshot = false;
+        }
         else ResetFollowerSnapshotBaseline("authority role changed");
         string localName = Main.Multiplayer == null ? "<offline>" : Main.Multiplayer.PlayerName;
         string preferredName = Main.Multiplayer == null ? "<offline>" : GetPreferredAuthorityName();

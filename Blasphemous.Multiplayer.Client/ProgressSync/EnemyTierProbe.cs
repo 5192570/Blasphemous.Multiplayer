@@ -33,6 +33,7 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync
 
         internal static void Initialize()
         {
+            if (!EnemyDiagnostics.EnableEnemyTierDiagnostics) return;
             if (_initialized) return;
             _initialized = true;
             Entity.Started -= OnEntityStarted;
@@ -42,11 +43,13 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync
         /// <summary>Describes enemies that were already in the scene when the probe was installed.</summary>
         internal static void DescribeExisting()
         {
+            if (!EnemyDiagnostics.EnableEnemyTierDiagnostics) return;
             foreach (Entity entity in Entity.LivingEntities) OnEntityStarted(entity);
         }
 
         private static void OnEntityStarted(Entity entity)
         {
+            if (!EnemyDiagnostics.EnableEnemyTierDiagnostics) return;
             Enemy enemy = entity as Enemy;
             if (enemy == null) return;
 

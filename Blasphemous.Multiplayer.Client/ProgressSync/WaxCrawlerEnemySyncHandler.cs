@@ -155,12 +155,18 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
         bool changed = state != _appliedPresentationState;
         _appliedPresentationState = state;
         if (_crawler.AnimatorInyector == null) return;
+        Animator animator = _crawler.AnimatorInyector.Animator;
 
         switch (state)
         {
             case PresentationHidden:
                 _crawler.AnimatorInyector.EnableSpriteRenderer = false;
                 _crawler.AnimatorInyector.AnimatorSpeed(0f);
+                // Vanilla Hide() uses a latched Animator trigger. Clear any
+                // unconsumed HIDE before freezing here; otherwise it can
+                // survive into the next Emerged state and immediately start
+                // Disappear even though the authority is still emerged.
+                if (animator != null) animator.ResetTrigger("HIDE");
                 if (changed) SetAttackable(false);
                 break;
 
@@ -169,6 +175,9 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
                 _crawler.AnimatorInyector.AnimatorSpeed(1f);
                 if (changed)
                 {
+                    // Appear() uses Animator.Play and does not clear triggers,
+                    // so remove a stale HIDE before replaying the emerge.
+                    if (animator != null) animator.ResetTrigger("HIDE");
                     _crawler.AnimatorInyector.Appear();
                     SetAttackable(true);
                 }

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Reflection;
 using Blasphemous.Multiplayer.Client.Network;
 using Blasphemous.Multiplayer.Client.Players;
@@ -66,6 +67,22 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
         AccessTools.PropertySetter(typeof(EnemyBehaviour), "PlayerSeen");
     private static readonly FieldInfo PlayerSeenField =
         AccessTools.Field(typeof(EnemyBehaviour), "<PlayerSeen>k__BackingField");
+    private static readonly MethodInfo PlayerHeardSetter =
+        AccessTools.PropertySetter(typeof(EnemyBehaviour), "PlayerHeard");
+    private static readonly FieldInfo PlayerHeardField =
+        AccessTools.Field(typeof(EnemyBehaviour), "<PlayerHeard>k__BackingField");
+
+    // CollisionSensor keeps its live contacts in a private object list; the
+    // behaviour tree reads that state (IsColliding) for this enemy's wake
+    // branch, and puppets can never enter it through physics. The handler
+    // mirrors in-range puppets into the list (and back out) on the authority.
+    private static readonly FieldInfo SensorObjectListField =
+        AccessTools.Field(typeof(CollisionSensor), "objectList");
+
+    private readonly HashSet<GameObject> _mirroredVisualObjects = new HashSet<GameObject>();
+    private readonly HashSet<GameObject> _mirroredHearingObjects = new HashSet<GameObject>();
+    private CollisionSensor _visualSensorComponent;
+    private CollisionSensor _hearingSensorComponent;
 
     protected override void OnAttach()
     {
@@ -134,29 +151,15 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
         }
 
         CollisionSensor collisionSensor = sensor.GetComponent<CollisionSensor>();
-        bool localSeen = collisionSensor != null && collisionSensor.IsColliding();
-
-        bool remoteSeen = false;
-        if (Main.Multiplayer != null && Main.Multiplayer.OtherPlayerManager != null)
-        {
-            foreach (OtherPlayerScript player in Main.Multiplayer.OtherPlayerManager.AllActivePlayers)
-            {
-                if (player == null || !player.gameObject.activeInHierarchy) continue;
-
-                // The puppet root sits at the player's feet; test the body above
-                // it too, matching what the Penitent's own collider would cover.
-                // The bounds test backs up OverlapPoint in case the sensor
-                // collider's enabled state makes the geometric test unreliable.
-                Vector3 position = player.transform.position;
-                if (sensor.OverlapPoint((Vector2)position) ||
-                    sensor.OverlapPoint((Vector2)(position + Vector3.up)) ||
-                    sensor.bounds.Contains(position + Vector3.up * 0.5f))
-                {
-                    remoteSeen = true;
-                    break;
-                }
-            }
-        }
+        _visualSensorComponent = collisionSensor;
+        // Touched entities only ever contain real Entities (the Penitent), so
+        // this stays a clean local-player signal even after puppets are
+        // mirrored into the object list below. Any other unmirrored contact
+        // also counts, so the drive never fights a vanilla sensor trip.
+        bool localSeen = collisionSensor != null &&
+            (collisionSensor.GetTouchedEntities().Length > 0 ||
+             SensorHasUnmirroredContact(collisionSensor, _mirroredVisualObjects));
+        bool remoteSeen = AnyPuppetInSensor(sensor);
 
         bool seen = localSeen || remoteSeen;
         if (_crawler.Behaviour.PlayerSeen != seen)
@@ -164,6 +167,16 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
             SetPlayerSeen(seen);
             SharedDiagnosticLogger.Info($"[WaxPerceptionDiag] PlayerSeen -> {seen} (localSensor={localSeen}, remoteInSensor={remoteSeen}), enemyInstance={_crawler.GetInstanceID()}, sensorBounds={sensor.bounds}");
         }
+
+        // The step-5c probe showed the tree also reads the sensors' live
+        // collision bookkeeping: with PlayerSeen driven true but the sensor
+        // object lists empty, the crawler never woke, while the host-player
+        // case has IsColliding()=true and a touched Penitent. Mirror in-range
+        // puppets into the visual and hearing sensors' object lists so that
+        // state exists for remote players too, and drive PlayerHeard like
+        // PlayerSeen. Only puppets this handler added are ever removed.
+        SyncSensorMirror(collisionSensor, sensor, _mirroredVisualObjects);
+        DriveHearingPerception();
 
         bool awakeFlip = _crawler.Behaviour.Awake != _awakeObserved;
         _awakeObserved = _crawler.Behaviour.Awake;
@@ -249,6 +262,130 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
             PlayerSeenSetter.Invoke(_crawler.Behaviour, new object[] { seen });
         else if (PlayerSeenField != null)
             PlayerSeenField.SetValue(_crawler.Behaviour, seen);
+    }
+
+    private void SetPlayerHeard(bool heard)
+    {
+        if (PlayerHeardSetter != null)
+            PlayerHeardSetter.Invoke(_crawler.Behaviour, new object[] { heard });
+        else if (PlayerHeardField != null)
+            PlayerHeardField.SetValue(_crawler.Behaviour, heard);
+    }
+
+    private void DriveHearingPerception()
+    {
+        Collider2D hearing;
+        try
+        {
+            hearing = _crawler.Behaviour.GetHearingSensor();
+        }
+        catch (System.Exception)
+        {
+            return;
+        }
+        if (hearing == null) return;
+
+        CollisionSensor hearingSensor = hearing.GetComponent<CollisionSensor>();
+        _hearingSensorComponent = hearingSensor;
+
+        bool localHeard = hearingSensor != null &&
+            (hearingSensor.GetTouchedEntities().Length > 0 ||
+             SensorHasUnmirroredContact(hearingSensor, _mirroredHearingObjects));
+        bool heard = localHeard || AnyPuppetInSensor(hearing);
+        if (_crawler.Behaviour.PlayerHeard != heard) SetPlayerHeard(heard);
+
+        SyncSensorMirror(hearingSensor, hearing, _mirroredHearingObjects);
+    }
+
+    private static bool AnyPuppetInSensor(Collider2D sensor)
+    {
+        if (Main.Multiplayer == null || Main.Multiplayer.OtherPlayerManager == null) return false;
+        foreach (OtherPlayerScript player in Main.Multiplayer.OtherPlayerManager.AllActivePlayers)
+        {
+            if (player == null || !player.gameObject.activeInHierarchy) continue;
+            if (IsPuppetInSensor(player.gameObject, sensor)) return true;
+        }
+        return false;
+    }
+
+    private static bool IsPuppetInSensor(GameObject puppet, Collider2D sensor)
+    {
+        // The puppet root sits at the player's feet; test the body above it
+        // too, matching what the Penitent's own collider would cover. The
+        // bounds test backs up OverlapPoint in case the sensor collider's
+        // enabled state makes the geometric test unreliable.
+        Vector3 position = puppet.transform.position;
+        return sensor.OverlapPoint((Vector2)position) ||
+               sensor.OverlapPoint((Vector2)(position + Vector3.up)) ||
+               sensor.bounds.Contains(position + Vector3.up * 0.5f);
+    }
+
+    private static List<GameObject> GetSensorObjects(CollisionSensor sensorComponent)
+    {
+        if (sensorComponent == null || SensorObjectListField == null) return null;
+        return SensorObjectListField.GetValue(sensorComponent) as List<GameObject>;
+    }
+
+    private static bool SensorHasUnmirroredContact(CollisionSensor sensorComponent, HashSet<GameObject> mirrored)
+    {
+        List<GameObject> objects = GetSensorObjects(sensorComponent);
+        if (objects == null) return sensorComponent != null && sensorComponent.IsColliding();
+        foreach (GameObject contact in objects)
+        {
+            if (contact != null && !mirrored.Contains(contact)) return true;
+        }
+        return false;
+    }
+
+    private void SyncSensorMirror(CollisionSensor sensorComponent, Collider2D sensorCollider, HashSet<GameObject> mirrored)
+    {
+        List<GameObject> objects = GetSensorObjects(sensorComponent);
+        if (objects == null || sensorCollider == null) return;
+
+        if (Main.Multiplayer != null && Main.Multiplayer.OtherPlayerManager != null)
+        {
+            foreach (OtherPlayerScript player in Main.Multiplayer.OtherPlayerManager.AllActivePlayers)
+            {
+                if (player == null || !player.gameObject.activeInHierarchy) continue;
+                GameObject puppet = player.gameObject;
+                if (!IsPuppetInSensor(puppet, sensorCollider)) continue;
+                if (!objects.Contains(puppet)) objects.Add(puppet);
+                mirrored.Add(puppet);
+            }
+        }
+
+        // Remove only entries this handler mirrored that no longer qualify
+        // (left the sensor, left the scene, destroyed). Vanilla contacts are
+        // never tracked in the mirrored set and are left alone.
+        List<GameObject> stale = null;
+        foreach (GameObject puppet in mirrored)
+        {
+            if (puppet != null && puppet.activeInHierarchy && IsPuppetInSensor(puppet, sensorCollider)) continue;
+            if (stale == null) stale = new List<GameObject>();
+            stale.Add(puppet);
+        }
+        if (stale == null) return;
+        foreach (GameObject puppet in stale)
+        {
+            objects.Remove(puppet);
+            mirrored.Remove(puppet);
+        }
+    }
+
+    private void ClearSensorMirrors()
+    {
+        RemoveMirrored(_visualSensorComponent, _mirroredVisualObjects);
+        RemoveMirrored(_hearingSensorComponent, _mirroredHearingObjects);
+    }
+
+    private static void RemoveMirrored(CollisionSensor sensorComponent, HashSet<GameObject> mirrored)
+    {
+        List<GameObject> objects = GetSensorObjects(sensorComponent);
+        if (objects != null)
+        {
+            foreach (GameObject puppet in mirrored) objects.Remove(puppet);
+        }
+        mirrored.Clear();
     }
 
     internal override bool IsWalking => _isMoving && _crawler != null && !_crawler.Status.Dead;
@@ -339,6 +476,7 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
         // source: vanilla AI on the authority, snapshots on a follower.
         _appliedPresentationState = PresentationUnknown;
         _isAuthority = authority;
+        if (!authority) ClearSensorMirrors();
         _crawler.Behaviour.EnableBehaviourOnLoad = authority;
         if (!authority)
         {

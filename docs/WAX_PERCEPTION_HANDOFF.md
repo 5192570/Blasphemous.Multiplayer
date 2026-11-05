@@ -39,8 +39,30 @@ for them.
    accessors, the patch may not have applied, or the overlap test never matched.
    No diagnostics existed to distinguish these.
 
-2. **Current commit (UNTESTED):** deleted the Harmony patch; the Wax handler now
-   drives perception itself on the authority:
+2. **`88ed1fc` (tested, mechanism worked, assumption falsified):** deleted the
+   Harmony patch; the Wax handler drives perception itself on the authority.
+   The transition logs fired correctly (`PlayerSeen -> True`,
+   `remoteInSensor=True`), yet no emerge — so the field alone is not the gate.
+
+3. **Probe (`1777a73`) + sensor mirroring (current, UNTESTED):** a 1 s
+   authority-side probe of all candidate wake inputs, run in both cases,
+   gave a clean diff. Failing case (follower in mud): `playerSeen=True`,
+   targets = puppet, but `visualColliding=False`, touched=`[<none>]`,
+   `hearingColliding=False`, `awake` never true. Working case (host in mud):
+   `visualColliding=True`, touched=`[Penitent]`, `hearingColliding=True`,
+   `awake=True`, and the tree itself sets `behaviourTarget` to the Penitent's
+   `Body` child — it pulls its target from the sensor. Conclusion: the tree
+   reads the sensors' live collision bookkeeping. Current fix therefore
+   mirrors in-range puppets into the visual and hearing `CollisionSensor`
+   private `objectList`s (reflection, adapter-tracked, removed on exit or
+   authority loss) and drives `PlayerHeard` like `PlayerSeen`. Note the
+   probe's `touched=[...]` reads `entityList`, which can only hold real
+   `Entity` objects — it will still show `[<none>]` for puppets after this
+   fix; judge by `visualColliding=True` + `awake=True` instead. If it still
+   fails with `visualColliding=True`, the remaining suspect is
+   `GetTouchedEntities()`/Penitent-identity, which cannot be mirrored with a
+   puppet and would need the graph-extraction route or `Rise()` driving.
+   Original (now historical) description of attempt 2:
    - `WaxCrawlerEnemySyncHandler.DriveAuthorityPerception()` runs every
      `OnSyncUpdate` while `_isAuthority`. It computes `localSeen` from the
      sensor's own `CollisionSensor.IsColliding()` and `remoteSeen` by testing

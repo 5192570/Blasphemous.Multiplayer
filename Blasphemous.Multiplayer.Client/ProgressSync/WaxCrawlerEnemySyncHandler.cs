@@ -13,9 +13,11 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync;
 ///
 /// Phase 1 is host-puppet sync only: the scene authority runs the vanilla AI and
 /// publishes position/health, followers keep their AI dormant and are posed from
-/// snapshots. The emerge/disappear presentation (Rise/Asleep) is not mirrored yet:
-/// a follower reveals its crawler when the authority reports it moving, and the
-/// return-to-hidden transition is a known gap for a later special-state pass.
+/// snapshots. The emerge/disappear presentation is mirrored through the shared
+/// special-state byte: Hidden (0), Emerged (1), Submerging (2). The follower
+/// replays the vanilla Appear/Hide animator entries on transitions, so its own
+/// animator state behaviours run the same collider/attackable and Asleep()
+/// side effects as on the authority.
 ///
 /// Vanilla traps this adapter deliberately avoids:
 /// WaxCrawlerBehaviour.StopMovement(), Damage() and Attack() all throw
@@ -25,16 +27,25 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync;
 /// </summary>
 public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
 {
+    // Special-state values for the emerge/disappear presentation. These ride the
+    // existing snapshot specialState byte, whose protocol range is already 0-2.
+    private const byte PresentationHidden = 0;
+    private const byte PresentationEmerged = 1;
+    private const byte PresentationSubmerging = 2;
+    private const byte PresentationUnknown = 255;
+
     private WaxCrawler _crawler;
     private Vector3 _lastObservedPosition;
     private bool _positionPrimed;
     private bool _isMoving;
+    private byte _appliedPresentationState = PresentationUnknown;
 
     protected override void OnAttach()
     {
         _crawler = Enemy as WaxCrawler;
         _positionPrimed = false;
         _isMoving = false;
+        _appliedPresentationState = PresentationUnknown;
     }
 
     internal override void OnSyncUpdate()
@@ -59,10 +70,90 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
     internal override bool IsWalking => _isMoving && _crawler != null && !_crawler.Status.Dead;
     internal override bool SyncHitOnDamage => false;
 
+    internal override byte SpecialState
+    {
+        get
+        {
+            if (_crawler == null || _crawler.Behaviour == null || !_crawler.Behaviour.Awake)
+                return PresentationHidden;
+            return IsSubmerging() ? PresentationSubmerging : PresentationEmerged;
+        }
+    }
+
+    private bool IsSubmerging()
+    {
+        Animator animator = _crawler.AnimatorInyector == null ? null : _crawler.AnimatorInyector.Animator;
+        if (animator == null) return false;
+        // The Disappear state is where vanilla plays the submerge clip; its state
+        // behaviour calls Asleep() (hide + return to origin) at the end of it.
+        return animator.GetCurrentAnimatorStateInfo(0).IsName("Disappear") ||
+               animator.GetNextAnimatorStateInfo(0).IsName("Disappear");
+    }
+
+    internal override void ApplySpecialState(byte state, string authorityName)
+    {
+        if (_crawler == null || state > PresentationSubmerging || _crawler.Status.Dead) return;
+
+        bool changed = state != _appliedPresentationState;
+        _appliedPresentationState = state;
+        if (_crawler.AnimatorInyector == null) return;
+
+        switch (state)
+        {
+            case PresentationHidden:
+                _crawler.AnimatorInyector.EnableSpriteRenderer = false;
+                _crawler.AnimatorInyector.AnimatorSpeed(0f);
+                if (changed) SetAttackable(false);
+                break;
+
+            case PresentationEmerged:
+                _crawler.AnimatorInyector.EnableSpriteRenderer = true;
+                _crawler.AnimatorInyector.AnimatorSpeed(1f);
+                if (changed)
+                {
+                    _crawler.AnimatorInyector.Appear();
+                    SetAttackable(true);
+                }
+                break;
+
+            case PresentationSubmerging:
+                // Replay the vanilla submerge entry. The follower's own Disappear
+                // state behaviour then disables the damage collider and calls
+                // Asleep() at the end of the clip, exactly as on the authority;
+                // the position snap to origin arrives with the Hidden snapshot.
+                _crawler.AnimatorInyector.EnableSpriteRenderer = true;
+                _crawler.AnimatorInyector.AnimatorSpeed(1f);
+                if (changed)
+                {
+                    _crawler.AnimatorInyector.Hide();
+                    SetAttackable(false);
+                }
+                break;
+        }
+    }
+
+    private void SetAttackable(bool attackable)
+    {
+        if (_crawler == null) return;
+        _crawler.CanBeAttacked = attackable;
+        if (_crawler.DamageArea != null && _crawler.DamageArea.DamageAreaCollider != null)
+            _crawler.DamageArea.DamageAreaCollider.enabled = attackable;
+    }
+
+    internal override void OnAuthorityContextChanged(string reason)
+    {
+        // Presentation copied from the previous authority must be re-evaluated
+        // against the new authority's next snapshot, not kept as-is.
+        _appliedPresentationState = PresentationUnknown;
+    }
+
     internal override void SetAuthority(bool authority)
     {
         if (_crawler == null || _crawler.Behaviour == null) return;
 
+        // Whichever role comes next must (re)apply presentation from its own
+        // source: vanilla AI on the authority, snapshots on a follower.
+        _appliedPresentationState = PresentationUnknown;
         _crawler.Behaviour.EnableBehaviourOnLoad = authority;
         if (!authority)
         {

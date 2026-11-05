@@ -19,9 +19,17 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync;
 /// </summary>
 internal static class EnemyDiagnostics
 {
-    // === Diagnose switch: edit this one line, then rebuild. ===
+    // === Diagnose switches: edit these lines, then rebuild. ===
     // "" (default) = quiet, "WheelCarrier" / "Fool" / ... = that enemy only, "*" = all enemies.
     private const string VerboseEnemyTypeName = "";
+
+    // Per-enemy diagnostic layers that cost continuously while enabled. All off by
+    // default: per-enemy/per-event logs (registration, state, death, [EnemyTierDiag])
+    // stay on, per-frame layers stay off until a test actually needs them.
+    // HP labels: one TextMesh + LateUpdate (Camera.main + scale math) on EVERY enemy.
+    internal const bool ShowEnemyHpLabels = false;
+    // Spawn diagnostics: logs every CreateEnemy/IsSpawnerConsumed call in the scene.
+    internal const bool LogSpawnDiagnostics = false;
 
     internal static bool IsVerbose(Enemy enemy)
     {

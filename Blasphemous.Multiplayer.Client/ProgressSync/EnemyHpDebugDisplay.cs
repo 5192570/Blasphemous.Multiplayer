@@ -13,13 +13,18 @@ internal static class EnemyHpDebugDisplayManager
 {
     internal static void Initialize()
     {
+        // Opt-in only (EnemyDiagnostics.ShowEnemyHpLabels): a label costs a
+        // TextMesh plus a per-frame LateUpdate on every enemy in the scene.
+        if (!EnemyDiagnostics.ShowEnemyHpLabels)
+            return;
+
         Entity.Started -= OnEntityStarted;
         Entity.Started += OnEntityStarted;
     }
 
     internal static void AttachExisting()
     {
-        if (!IsGameplayScene())
+        if (!EnemyDiagnostics.ShowEnemyHpLabels || !IsGameplayScene())
             return;
 
         foreach (Entity entity in Entity.LivingEntities)

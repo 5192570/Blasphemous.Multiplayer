@@ -652,6 +652,11 @@ public static class EnemyDeathSyncManager
     internal static bool TryTakePendingRemoteHealth(Enemy enemy, int generation, out float currentHealth)
     {
         currentHealth = 0f;
+        // This is polled every frame by every follower EnemySync, and resolving the
+        // identity costs a scene-wide spawn-point scan. Pending health only exists
+        // between a snapshot packet landing and the next snapshot applying, so the
+        // empty case (virtually every frame) must not pay for the scan.
+        if (pendingEnemyHealth.Count == 0) return false;
         if (!EnemySyncManager.Supports(enemy) || !TryGetSyncIdentity(enemy, out string sceneName, out string spawnPointId, out int currentGeneration) ||
             currentGeneration != generation) return false;
 

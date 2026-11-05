@@ -109,6 +109,12 @@ namespace Blasphemous.Multiplayer.Client
     {
         internal static void Write(string message)
         {
+            // Opt-in only (EnemyDiagnostics.LogSpawnDiagnostics): the patched
+            // methods fire per spawn/consumption check, so this is a burst of
+            // log writes around every scene load for no benefit by default.
+            if (!ProgressSync.EnemyDiagnostics.LogSpawnDiagnostics)
+                return;
+
             // UTC keeps timestamps directly comparable between the two players' logs.
             SharedDiagnosticLogger.Info($"[EnemySpawnDiagnostics] {DateTime.UtcNow:yyyy-MM-ddTHH:mm:ss.fffZ} {message}");
         }

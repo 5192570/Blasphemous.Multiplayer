@@ -1,7 +1,12 @@
+using System.Reflection;
+using Blasphemous.Multiplayer.Client.Network;
+using Blasphemous.Multiplayer.Client.Players;
 using Framework.FrameworkCore;
 using Framework.Managers;
+using Gameplay.GameControllers.Enemies.Framework.IA;
 using Gameplay.GameControllers.Enemies.WaxCrawler;
 using Gameplay.GameControllers.Entities;
+using HarmonyLib;
 using UnityEngine;
 
 namespace Blasphemous.Multiplayer.Client.ProgressSync;
@@ -39,6 +44,18 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
     private bool _positionPrimed;
     private bool _isMoving;
     private byte _appliedPresentationState = PresentationUnknown;
+    private bool _isAuthority;
+
+    // EnemyBehaviour.PlayerSeen drives this enemy's wake/chase decisions, but
+    // vanilla only sets it from the visual CollisionSensor, which remote-player
+    // puppets (no sensor-visible collider) can never trip. On the authority the
+    // handler therefore drives the backing field directly (see
+    // DriveAuthorityPerception). The setter is resolved by name with a
+    // backing-field fallback; both are null-guarded.
+    private static readonly MethodInfo PlayerSeenSetter =
+        AccessTools.PropertySetter(typeof(EnemyBehaviour), "PlayerSeen");
+    private static readonly FieldInfo PlayerSeenField =
+        AccessTools.Field(typeof(EnemyBehaviour), "<PlayerSeen>k__BackingField");
 
     protected override void OnAttach()
     {
@@ -65,6 +82,72 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
 
         _isMoving = (position - _lastObservedPosition).sqrMagnitude > 0.000001f;
         _lastObservedPosition = position;
+
+        if (_isAuthority) DriveAuthorityPerception();
+    }
+
+    /// <summary>
+    /// Authority-side perception for remote players. Computes "a player is inside
+    /// the visual sensor" from the real Penitent (via the sensor's own collision
+    /// list, exactly as vanilla leaves it) plus every remote puppet's position
+    /// tested against the same sensor collider, then writes the result into
+    /// PlayerSeen's backing field so every consumer (property, IsPlayerSeen(),
+    /// behaviour-tree reflection) observes it. Transitions are logged so a test
+    /// log shows whether this link in the chain is doing its part.
+    /// </summary>
+    private void DriveAuthorityPerception()
+    {
+        if (_crawler == null || _crawler.Behaviour == null) return;
+
+        Collider2D sensor;
+        try
+        {
+            sensor = _crawler.Behaviour.GetVisualSensor();
+        }
+        catch (System.Exception)
+        {
+            return;
+        }
+        if (sensor == null) return;
+
+        CollisionSensor collisionSensor = sensor.GetComponent<CollisionSensor>();
+        bool localSeen = collisionSensor != null && collisionSensor.IsColliding();
+
+        bool remoteSeen = false;
+        if (Main.Multiplayer != null && Main.Multiplayer.OtherPlayerManager != null)
+        {
+            foreach (OtherPlayerScript player in Main.Multiplayer.OtherPlayerManager.AllActivePlayers)
+            {
+                if (player == null || !player.gameObject.activeInHierarchy) continue;
+
+                // The puppet root sits at the player's feet; test the body above
+                // it too, matching what the Penitent's own collider would cover.
+                // The bounds test backs up OverlapPoint in case the sensor
+                // collider's enabled state makes the geometric test unreliable.
+                Vector3 position = player.transform.position;
+                if (sensor.OverlapPoint((Vector2)position) ||
+                    sensor.OverlapPoint((Vector2)(position + Vector3.up)) ||
+                    sensor.bounds.Contains(position + Vector3.up * 0.5f))
+                {
+                    remoteSeen = true;
+                    break;
+                }
+            }
+        }
+
+        bool seen = localSeen || remoteSeen;
+        if (_crawler.Behaviour.PlayerSeen == seen) return;
+
+        SetPlayerSeen(seen);
+        SharedDiagnosticLogger.Info($"[WaxPerceptionDiag] PlayerSeen -> {seen} (localSensor={localSeen}, remoteInSensor={remoteSeen}), enemyInstance={_crawler.GetInstanceID()}, sensorBounds={sensor.bounds}");
+    }
+
+    private void SetPlayerSeen(bool seen)
+    {
+        if (PlayerSeenSetter != null)
+            PlayerSeenSetter.Invoke(_crawler.Behaviour, new object[] { seen });
+        else if (PlayerSeenField != null)
+            PlayerSeenField.SetValue(_crawler.Behaviour, seen);
     }
 
     internal override bool IsWalking => _isMoving && _crawler != null && !_crawler.Status.Dead;
@@ -154,6 +237,7 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
         // Whichever role comes next must (re)apply presentation from its own
         // source: vanilla AI on the authority, snapshots on a follower.
         _appliedPresentationState = PresentationUnknown;
+        _isAuthority = authority;
         _crawler.Behaviour.EnableBehaviourOnLoad = authority;
         if (!authority)
         {
@@ -180,7 +264,12 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
 
     internal override void SetTarget(GameObject target)
     {
-        if (_crawler != null && target != null) _crawler.Target = target;
+        if (_crawler == null || target == null) return;
+        _crawler.Target = target;
+        // The behaviour carries its own Target transform, separate from the
+        // entity's; keep both pointing at the committed player in case the
+        // behaviour tree reads the behaviour-side one.
+        if (_crawler.Behaviour != null) _crawler.Behaviour.Target = target.transform;
     }
 
     internal override void ApplySnapshot(byte orientation, byte state, bool walking)

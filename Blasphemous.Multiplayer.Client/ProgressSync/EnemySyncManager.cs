@@ -34,6 +34,8 @@ internal static class EnemySyncManager
     {
         { typeof(Gameplay.GameControllers.Enemies.Fool.Fool), typeof(FoolEnemySyncHandler) },
         { typeof(Gameplay.GameControllers.Enemies.WheelCarrier.WheelCarrier), typeof(WheelCarrierEnemySyncHandler) },
+        // WaxCrawler also backs the mud crawler prefab variants (MudCrawlerAudio).
+        { typeof(Gameplay.GameControllers.Enemies.WaxCrawler.WaxCrawler), typeof(WaxCrawlerEnemySyncHandler) },
     };
 
     internal static void Initialize()

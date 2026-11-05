@@ -27,7 +27,9 @@ internal static class EnemyDiagnostics
     // default: per-enemy/per-event logs (registration, state, death, [EnemyTierDiag])
     // stay on, per-frame layers stay off until a test actually needs them.
     // HP labels: one TextMesh + LateUpdate (Camera.main + scale math) on EVERY enemy.
-    internal const bool ShowEnemyHpLabels = false;
+    // On by default: identifying which enemy is which in a crowd is worth more
+    // during bring-up than the per-frame label cost. Flip off for perf A/B tests.
+    internal const bool ShowEnemyHpLabels = true;
     // Spawn diagnostics: logs every CreateEnemy/IsSpawnerConsumed call in the scene.
     internal const bool LogSpawnDiagnostics = false;
 

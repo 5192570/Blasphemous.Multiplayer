@@ -390,7 +390,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     {
         if (_wheelCarrier == null || _wheelCarrier.EntExecution == null)
         {
-            SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Execution presentation skipped: enemy not ready enemyInstance={_wheelCarrier?.GetInstanceID()}, owner={ownerName}");
+            if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics) SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Execution presentation skipped: enemy not ready enemyInstance={_wheelCarrier?.GetInstanceID()}, owner={ownerName}");
             return;
         }
 
@@ -399,7 +399,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
 
         if (_executionFinisherStarted)
         {
-            SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Execution already presented enemyInstance={_wheelCarrier.GetInstanceID()}, owner={ownerName}, aliveFor={(Time.unscaledTime - _executionPresentationStartedAt):0.000}, time={Time.realtimeSinceStartup:0.000}");
+            if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Execution already presented enemyInstance={_wheelCarrier.GetInstanceID()}, owner={ownerName}, aliveFor={(Time.unscaledTime - _executionPresentationStartedAt):0.000}, time={Time.realtimeSinceStartup:0.000}");
             return;
         }
 
@@ -419,11 +419,11 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
             _executionClipStarted = false;
             _executionPresentationAnimator = TriggerExecutionClip(_executionPresentation, interactor);
 
-            SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Execution presentation started enemyInstance={_wheelCarrier.GetInstanceID()}, owner={ownerName}, side={side}, animator={(_executionPresentationAnimator != null ? _executionPresentationAnimator.name : "<none>")}, interactor={(interactor != null ? interactor.name : "<none>")}, prompt={(prompt != null ? prompt.name : "<none>")}, reused={(Time.unscaledTime - _executionPresentationCreatedAt):0.000}s, time={Time.realtimeSinceStartup:0.000}");
+            if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Execution presentation started enemyInstance={_wheelCarrier.GetInstanceID()}, owner={ownerName}, side={side}, animator={(_executionPresentationAnimator != null ? _executionPresentationAnimator.name : "<none>")}, interactor={(interactor != null ? interactor.name : "<none>")}, prompt={(prompt != null ? prompt.name : "<none>")}, reused={(Time.unscaledTime - _executionPresentationCreatedAt):0.000}s, time={Time.realtimeSinceStartup:0.000}");
         }
         catch (Exception ex)
         {
-            SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Execution presentation failed enemyInstance={_wheelCarrier?.GetInstanceID()}, owner={ownerName}, error={ex.GetType().Name}: {ex.Message}");
+            if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics) SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Execution presentation failed enemyInstance={_wheelCarrier?.GetInstanceID()}, owner={ownerName}, error={ex.GetType().Name}: {ex.Message}");
             DestroyExecutionPresentation("presentation failed");
         }
     }
@@ -440,7 +440,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         GameObject prefab = _wheelCarrier.EntExecution.ExecutionPrefab;
         if (prefab == null)
         {
-            SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Execution presentation skipped: EntExecution has no prefab enemyInstance={_wheelCarrier.GetInstanceID()}, owner={ownerName}");
+            if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics) SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Execution presentation skipped: EntExecution has no prefab enemyInstance={_wheelCarrier.GetInstanceID()}, owner={ownerName}");
             return false;
         }
 
@@ -491,12 +491,12 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
             if (_wheelCarrier.Attack != null) _wheelCarrier.Attack.gameObject.SetActive(false);
 
             Animator prompt = ReadInteractableAnimator(interactable, "interactableAnimator");
-            SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Executionable presentation created enemyInstance={_wheelCarrier.GetInstanceID()}, owner={ownerName}, side={side}, prompt={(prompt != null ? prompt.name : "<none>")}, interactor={(_executionInteractorAnimator != null ? _executionInteractorAnimator.name : "<none>")}, effects={effects.Length}, time={Time.realtimeSinceStartup:0.000}");
+            if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Executionable presentation created enemyInstance={_wheelCarrier.GetInstanceID()}, owner={ownerName}, side={side}, prompt={(prompt != null ? prompt.name : "<none>")}, interactor={(_executionInteractorAnimator != null ? _executionInteractorAnimator.name : "<none>")}, effects={effects.Length}, time={Time.realtimeSinceStartup:0.000}");
             return true;
         }
         catch (Exception ex)
         {
-            SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Execution presentation failed enemyInstance={_wheelCarrier?.GetInstanceID()}, owner={ownerName}, error={ex.GetType().Name}: {ex.Message}");
+            if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics) SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Execution presentation failed enemyInstance={_wheelCarrier?.GetInstanceID()}, owner={ownerName}, error={ex.GetType().Name}: {ex.Message}");
             DestroyExecutionPresentation("presentation failed");
             return false;
         }
@@ -520,7 +520,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
 
         // The field is protected on the vanilla base type; if reflection ever misses it, fall back
         // to the old behaviour rather than presenting nothing.
-        SharedDiagnosticLogger.Warn("[WheelCarrierExecutionDiag] interactorAnimator not readable; falling back to every animator with USED");
+        if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics) SharedDiagnosticLogger.Warn("[WheelCarrierExecutionDiag] interactorAnimator not readable; falling back to every animator with USED");
         Animator started = null;
         Animator[] animators = clone.GetComponentsInChildren<Animator>(true);
         foreach (Animator animator in animators)
@@ -547,7 +547,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
         }
         catch (Exception ex)
         {
-            SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Could not read {fieldName}: {ex.GetType().Name}: {ex.Message}");
+            if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics) SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Could not read {fieldName}: {ex.GetType().Name}: {ex.Message}");
             return null;
         }
     }
@@ -572,7 +572,7 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     /// </summary>
     private static void LogExecutionPrefabShapeOnce(GameObject clone, Execution interactable)
     {
-        if (_executionPrefabShapeLogged || clone == null) return;
+        if (!EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics || _executionPrefabShapeLogged || clone == null) return;
         _executionPrefabShapeLogged = true;
 
         System.Text.StringBuilder builder = new System.Text.StringBuilder();
@@ -644,8 +644,8 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
 
         // The executionable phase never set a finisher start; measure from creation instead.
         float age = Time.unscaledTime - (_executionFinisherStarted ? _executionPresentationStartedAt : _executionPresentationCreatedAt);
-        SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Execution presentation ended enemyInstance={_wheelCarrier?.GetInstanceID()}, reason={reason}, aliveFor={age:0.000}, time={Time.realtimeSinceStartup:0.000}");
-        SharedDiagnosticLogger.Info($"[WheelCarrierVisualDiag] Execution presentation final renderers enemyInstance={_wheelCarrier?.GetInstanceID()}, reason={reason}, clone={WheelCarrierVisualProbe.Describe(_executionPresentation.transform)}, time={Time.realtimeSinceStartup:0.000}");
+        if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Execution presentation ended enemyInstance={_wheelCarrier?.GetInstanceID()}, reason={reason}, aliveFor={age:0.000}, time={Time.realtimeSinceStartup:0.000}");
+        if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierVisualDiag] Execution presentation final renderers enemyInstance={_wheelCarrier?.GetInstanceID()}, reason={reason}, clone={WheelCarrierVisualProbe.Describe(_executionPresentation.transform)}, time={Time.realtimeSinceStartup:0.000}");
         Destroy(_executionPresentation);
         _executionPresentation = null;
         _executionPresentationAnimator = null;
@@ -670,6 +670,14 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
     /// </summary>
     private void StartVisualWatch(string reason)
     {
+        if (!EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics)
+        {
+            _visualEnemyState = null;
+            _visualCloneState = null;
+            _visualWatchClone = null;
+            return;
+        }
+
         _visualWatchUntil = Time.realtimeSinceStartup + VisualWatchSeconds;
         _nextVisualSample = 0f;
         _visualWatchClone = _executionPresentation != null ? _executionPresentation.transform : null;
@@ -681,6 +689,14 @@ public sealed class WheelCarrierEnemySyncHandler : EnemySyncHandler
 
     private void TickVisualWatch()
     {
+        if (!EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics)
+        {
+            _visualEnemyState = null;
+            _visualCloneState = null;
+            _visualWatchClone = null;
+            return;
+        }
+
         if (_visualEnemyState == null && _visualCloneState == null) return;
 
         if (Time.realtimeSinceStartup >= _visualWatchUntil)

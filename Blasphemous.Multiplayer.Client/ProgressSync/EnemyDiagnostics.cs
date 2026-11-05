@@ -32,6 +32,11 @@ internal static class EnemyDiagnostics
     internal const bool ShowEnemyHpLabels = true;
     // Spawn diagnostics: logs every CreateEnemy/IsSpawnerConsumed call in the scene.
     internal const bool LogSpawnDiagnostics = false;
+    // WheelCarrier execution diagnostics are parked for now: the remaining issue is
+    // visual-only, so keep its [WheelCarrierExecutionDiag]/[WheelCarrierVisualDiag]
+    // stream and post-death renderer watch off until that work resumes. Execution
+    // sync and the mirrored execution presentation are unaffected.
+    internal const bool EnableWheelCarrierExecutionDiagnostics = false;
 
     internal static bool IsVerbose(Enemy enemy)
     {

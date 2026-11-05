@@ -585,13 +585,13 @@ public static class EnemyDeathSyncManager
         // client that can answer this: PlayerDirection is measured against the local Penitent,
         // and an observer's Penitent is not the one performing the finisher.
         byte side = (byte)execution.PlayerDirection;
-        SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Report send scene={sceneName}, spawn={spawnPointId}, generation={generation}, epoch={epoch}, side={side}, enemyInstance={wheelCarrier.GetInstanceID()}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+        if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Report send scene={sceneName}, spawn={spawnPointId}, generation={generation}, epoch={epoch}, side={side}, enemyInstance={wheelCarrier.GetInstanceID()}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
         Main.Multiplayer.NetworkManager.SendEnemyExecutionStarted(sceneName, spawnPointId, generation, epoch, side);
     }
 
     public static void ApplyRemoteExecutionStarted(string sourcePlayerName, string sceneName, string spawnPointId, int generation, long epoch, byte side)
     {
-        SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Report received scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, epoch={epoch}, side={side}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
+        if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics) SharedDiagnosticLogger.Info($"[WheelCarrierExecutionDiag] Report received scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, epoch={epoch}, side={side}, localPlayer={Main.Multiplayer?.PlayerName}, time={Time.realtimeSinceStartup:0.000}");
         string rejection = null;
         EnemySpawnPoint point = null;
         if (string.IsNullOrEmpty(sourcePlayerName) || string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(spawnPointId) ||
@@ -610,13 +610,13 @@ public static class EnemyDeathSyncManager
 
         if (rejection != null)
         {
-            SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Report rejected scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, side={side}, reason={rejection}, time={Time.realtimeSinceStartup:0.000}");
+            if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics) SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Report rejected scene={sceneName}, spawn={spawnPointId}, generation={generation}, source={sourcePlayerName}, side={side}, reason={rejection}, time={Time.realtimeSinceStartup:0.000}");
             return;
         }
 
         if (!(point.SpawnedEnemy is WheelCarrier wheelCarrier))
         {
-            SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Report rejected scene={sceneName}, spawn={spawnPointId}, source={sourcePlayerName}, reason=spawned enemy is {point.SpawnedEnemy?.GetType().Name ?? "null"}");
+            if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics) SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Report rejected scene={sceneName}, spawn={spawnPointId}, source={sourcePlayerName}, reason=spawned enemy is {point.SpawnedEnemy?.GetType().Name ?? "null"}");
             return;
         }
 
@@ -624,7 +624,7 @@ public static class EnemyDeathSyncManager
         WheelCarrierEnemySyncHandler handler = wheelCarrier.GetComponent<WheelCarrierEnemySyncHandler>();
         if (handler == null)
         {
-            SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Report rejected scene={sceneName}, spawn={spawnPointId}, source={sourcePlayerName}, reason=sync handler missing");
+            if (EnemyDiagnostics.EnableWheelCarrierExecutionDiagnostics) SharedDiagnosticLogger.Warn($"[WheelCarrierExecutionDiag] Report rejected scene={sceneName}, spawn={spawnPointId}, source={sourcePlayerName}, reason=sync handler missing");
             return;
         }
 

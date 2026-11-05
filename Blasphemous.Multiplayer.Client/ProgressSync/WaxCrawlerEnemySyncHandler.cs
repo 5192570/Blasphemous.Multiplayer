@@ -43,6 +43,7 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
     private bool _isAuthority;
 
     private float _nextRiseDriveTime;
+    private float _nextStateLogTime;
     private bool _sensorMissingLogged;
 
     // Shared senses plumbing (sight/hearing field drives + sensor contact
@@ -122,6 +123,30 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
             _nextRiseDriveTime = Time.unscaledTime + 0.5f;
             _crawler.Behaviour.Rise();
             SharedDiagnosticLogger.Info($"[WaxPerceptionDiag] Rise() driven by handler (localSeen={localSeen}, remoteSeen={remoteSeen}), enemyInstance={_crawler.GetInstanceID()}");
+        }
+
+        // Temporary diagnostic for the stuck-awake investigation: while the
+        // authority crawler is awake (or a player is seen), sample the exact
+        // inputs of the tree's Hide branch (Awake/Melting/TargetLost/CanMove)
+        // plus the animator state, so a stuck run shows which gate is held.
+        if ((_crawler.Behaviour.Awake || seen) && Time.unscaledTime >= _nextStateLogTime)
+        {
+            _nextStateLogTime = Time.unscaledTime + 0.5f;
+            string animatorState = "<none>";
+            float animatorSpeed = -1f;
+            Animator animator = _crawler.AnimatorInyector == null ? null : _crawler.AnimatorInyector.Animator;
+            if (animator != null)
+            {
+                AnimatorStateInfo info = animator.GetCurrentAnimatorStateInfo(0);
+                animatorState = info.IsName("Appear") ? "Appear"
+                    : info.IsName("Crawling") ? "Crawling"
+                    : info.IsName("Disappear") ? "Disappear"
+                    : info.IsName("Hurt") ? "Hurt"
+                    : info.IsName("Death") ? "Death"
+                    : "hash:" + info.shortNameHash;
+                animatorSpeed = animator.speed;
+            }
+            SharedDiagnosticLogger.Info($"[WaxStateDiag] awake={_crawler.Behaviour.Awake}, melting={_crawler.Behaviour.Melting}, targetLost={_crawler.Behaviour.TargetLost}, canMove={_crawler.Behaviour.CanMove}, playerSeen={_crawler.Behaviour.PlayerSeen}, animator={animatorState}, speed={animatorSpeed:0.00}, enemyInstance={_crawler.GetInstanceID()}");
         }
     }
 

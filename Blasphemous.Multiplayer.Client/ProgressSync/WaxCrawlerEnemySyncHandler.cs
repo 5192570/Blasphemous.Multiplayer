@@ -134,20 +134,29 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
             _nextStateLogTime = Time.unscaledTime + 0.5f;
             string animatorState = "<none>";
             float animatorSpeed = -1f;
+            float normalizedTime = -1f;
+            string nextState = "<none>";
             Animator animator = _crawler.AnimatorInyector == null ? null : _crawler.AnimatorInyector.Animator;
             if (animator != null)
             {
                 AnimatorStateInfo info = animator.GetCurrentAnimatorStateInfo(0);
-                animatorState = info.IsName("Appear") ? "Appear"
-                    : info.IsName("Crawling") ? "Crawling"
-                    : info.IsName("Disappear") ? "Disappear"
-                    : info.IsName("Hurt") ? "Hurt"
-                    : info.IsName("Death") ? "Death"
-                    : "hash:" + info.shortNameHash;
+                animatorState = DescribeAnimatorState(info);
+                normalizedTime = info.normalizedTime;
+                nextState = DescribeAnimatorState(animator.GetNextAnimatorStateInfo(0));
                 animatorSpeed = animator.speed;
             }
-            SharedDiagnosticLogger.Info($"[WaxStateDiag] awake={_crawler.Behaviour.Awake}, melting={_crawler.Behaviour.Melting}, targetLost={_crawler.Behaviour.TargetLost}, canMove={_crawler.Behaviour.CanMove}, playerSeen={_crawler.Behaviour.PlayerSeen}, animator={animatorState}, speed={animatorSpeed:0.00}, enemyInstance={_crawler.GetInstanceID()}");
+            SharedDiagnosticLogger.Info($"[WaxStateDiag] awake={_crawler.Behaviour.Awake}, melting={_crawler.Behaviour.Melting}, targetLost={_crawler.Behaviour.TargetLost}, canMove={_crawler.Behaviour.CanMove}, playerSeen={_crawler.Behaviour.PlayerSeen}, animator={animatorState}, norm={normalizedTime:0.00}, next={nextState}, speed={animatorSpeed:0.00}, enemyInstance={_crawler.GetInstanceID()}");
         }
+    }
+
+    private static string DescribeAnimatorState(AnimatorStateInfo info)
+    {
+        return info.IsName("Appear") ? "Appear"
+            : info.IsName("Crawling") ? "Crawling"
+            : info.IsName("Disappear") ? "Disappear"
+            : info.IsName("Hurt") ? "Hurt"
+            : info.IsName("Death") ? "Death"
+            : "hash:" + info.shortNameHash;
     }
 
     internal override bool IsWalking => _isMoving && _crawler != null && !_crawler.Status.Dead;

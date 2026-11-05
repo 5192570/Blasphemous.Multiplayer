@@ -74,6 +74,17 @@ public sealed class WaxCrawlerEnemySyncHandler : EnemySyncHandler
         }
 
         _crawler.Behaviour.enabled = authority;
+
+        if (authority)
+        {
+            // WaxCrawlerBehaviour.OnUpdate never restarts its behaviour tree
+            // (unlike FoolBehaviour, which self-starts when a player is near),
+            // so the tree stopped by the follower pass above would stay stopped
+            // forever and the crawler would never emerge or move on the host.
+            // StartBehaviour() is guarded vanilla-side: no-op when the tree is
+            // null or already running.
+            _crawler.Behaviour.StartBehaviour();
+        }
     }
 
     internal override void SetTarget(GameObject target)

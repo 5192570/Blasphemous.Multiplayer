@@ -194,11 +194,14 @@ public sealed class EnemySync : MonoBehaviour
         string localName = Main.Multiplayer == null ? "<offline>" : Main.Multiplayer.PlayerName;
         string preferredName = Main.Multiplayer == null ? "<offline>" : GetPreferredAuthorityName();
         bool peerPublishing = _lastPeerSnapshotGeneration == _generation && Time.unscaledTime - _lastPeerSnapshot < PeerSnapshotTimeout;
-        string state = $"local={localName}|preferred={preferredName}|authority={_isAuthority}|epoch={_authorityEpoch}|peerPublishing={peerPublishing}|peers={DescribePeers()}";
+        // The peer list is deliberately NOT part of the change key: it contains
+        // peer scene names, so any peer travelling re-logged the identical
+        // authority state once per synced enemy. Peers are still printed.
+        string state = $"local={localName}|preferred={preferredName}|authority={_isAuthority}|epoch={_authorityEpoch}|peerPublishing={peerPublishing}";
         if (state == _lastAuthorityDiagnosticState) return;
 
         _lastAuthorityDiagnosticState = state;
-        SharedDiagnosticLogger.Info($"[EnemySyncDiag] Authority context changed scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, enemyInstance={_enemy?.GetInstanceID()}, {state}");
+        SharedDiagnosticLogger.Info($"[EnemySyncDiag] Authority context changed scene={_sceneName}, spawn={_spawnPointId}, generation={_generation}, enemyInstance={_enemy?.GetInstanceID()}, {state}, peers={DescribePeers()}");
     }
 
  

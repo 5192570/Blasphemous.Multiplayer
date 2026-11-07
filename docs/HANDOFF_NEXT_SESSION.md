@@ -1,336 +1,59 @@
-# Next session handoff — enemy sync handler refactor
+# Next session handoff — efficient enemy wiring
 
-Written at the end of the WheelCarrier riposte/execution work, before the refactor branch was started.
-It exists because session context does not survive between chats: everything below is either a fact
-verified from decompiled vanilla, a decision already agreed with the reviewer, or a tooling quirk of
-this sandbox. Read §2 and §4 before touching code; read §10 before running anything.
+## Start here
 
-- **Base to work from:** `enemy-sync-handler-refactor` = `dcf1512` (= `main` after PR #3 merged).
-- **PR #3 is merged and closed.** Do not re-open it and do not re-litigate anything in §5.
-- **Suggested PR title for the refactor:** *One handler per tier, one thin adapter per enemy.*
+PR [#4](https://github.com/5192570/Blasphemous.Multiplayer/pull/4) was merged **into `main`** at merge commit `fddc5af74fc0cb9cd9ae530aced94aaa0860b057` (head `6b48648`). The merged code, not the former `enemy-sync-handler-refactor` branch or the old tier proposal, is the baseline. Start the next session from the latest `main` with this handoff available; check the actual branch and repository instructions before working.
 
----
+**Next focus:** build a simple debug enemy spawner, starting in single-player, to make ordinary enemy testing less dependent on progression-gated rooms. Then investigate multiplayer coordination and use it to help wire additional ordinary enemies efficiently, grouping candidates by demonstrated shared building blocks and prefab variants. The user has chosen this direction, but feasibility and implementation details remain to be investigated. Proceed one step at a time and discuss consequential changes with the user.
 
-## 0. How to start the new chat
+Suggested opening: “Continue from `docs/HANDOFF_NEXT_SESSION.md` on current `main`. Investigate a simple Fool-only single-player debug spawner first, then multiplayer coordination and enemy building-block families. Do not assume a new tier framework or mass registration.”
 
-Paste this so the new session begins with the same footing:
+## Completed and validated
 
-> Continuing the Blasphemous multiplayer enemy-sync work. Base branch `enemy-sync-handler-refactor` (= `main` at
-> `dcf1512`, PR #3 merged). Read `docs/HANDOFF_NEXT_SESSION.md` first — it has the verified state, the agreed
-> tier/adapter plan, the vanilla facts, the test matrix, and the sandbox tooling notes. First task: step 1 of §4
-> (move-only `EnemyAdapter` split) after collecting a `[EnemyTierDiag]` inventory log.
+- Registration table gates supported enemy types: `Fool`, `WheelCarrier`, and `WaxCrawler`. Discovery attaches an enemy-specific handler plus `EnemySync`; unsupported types are skipped. The existing table is not a capability registry.
+- Snapshot processing and diagnostics performance changes were tested in both scene-host directions. Unchanged snapshots use a heartbeat; spawn identities are cached and identity retries run only while unresolved. The user reported no noticeable follower slowdown.
+- MudCrawler is a prefab variant using the `WaxCrawler` entity class. `MudCrawler`, `WaxCrawler`, and `SewerCrawler` exports reference the same `WaxCrawlerBT` graph; this does **not** establish that every variant was tested. P1/P2 emergence, repeated cycles and submerging with P1 watching or away were user-validated for MudCrawler. P2 attacking it was previously untested; don't infer a damage test from the presentation verdict.
+- `EnemyRemotePerception` shares puppet/sensor plumbing. Wax-specific wake policy still calls `Rise()` in its adapter; WheelCarrier's separate vision patch was not migrated. No protocol or authority changes were needed; protocol version remains 15.
+- Crawler offscreen freezing was traced to prefab Animator `CullCompletely`: the authority animator stopped progressing while the host camera was away. `EnemySync` now sets registered enemies' main `Enemy.Animator` to `AlwaysAnimate`, retrying initialization and handling a changed reference. The user tested the generic change and reported Wax, Fool, and WheelCarrier working identically. Offscreen animation cost is a possible future consideration, not a measured regression.
+- WheelCarrier's observer finisher previously always appeared on the left. `6b48648` uses vanilla `Execution.FlipAnimation` on the presentation clone with the owner's reported side, even when the clone is reused. The user confirmed P2's execution appears from the correct side on P1. This is presentation only; actual execution sync and mirroring are functional code, not a debug hack.
+- Enemy-specific diagnostics remain available but default off via switches in `EnemyDiagnostics.cs`: Wax, WheelCarrier state, WheelCarrier execution/visual watch, Penitent visibility, and tier probe. The user validated quiet logs without loss of functionality. Enemy HP labels are **on by default and should remain on** as a visual aid. Generic sync/death/damage logs are separate.
 
----
+## Next-phase milestones — proposed, not yet authorized for implementation
 
-## 1. What shipped, and what was verified
+1. **Investigate single-player groundwork first.** Read the current console integration, prefab discovery/loading and vanilla spawn-point initialization. Prefer reusing the game's existing spawn path where practical; if scene-authored dependencies make that unsuitable, consider a small debug wrapper, not a duplicate general spawning engine. Propose the smallest Fool-only prototype before implementation. The user has asked for planning only so far; confirm before coding.
+2. **Single-player proof of concept.** The desired command forms are `spawn fool -relative center` (dead center of the typing player's camera view, resolved to a world position) and `spawn fool -scene x y` (explicit scene/world coordinates). Start with Fool only; arbitrary camera offsets can wait. A screen center may be in midair or inside terrain; a real spawner's coordinates do not copy its other settings. Verify prefab availability, initialization, movement, attacks, damage, death, cleanup and save/progression isolation. Use a disposable save until safety is established. Do not bundle game assets with the mod; investigate loading them from the installed game.
+3. **Multiplayer follow-up.** Resolve camera-relative placement on the typing client and send the resulting world position, enemy choice and scene to the scene host, rather than converting separately using each camera. Investigate host-authorized coordination and matching identities on both clients. Current sync relies on scene spawn-point identity: matching positions or local `Instantiate` alone are insufficient. A targeted identity or protocol change may be necessary; don't assume either approach is already proven. Start with both players present in the same scene and one Fool, then explicitly address cleanup, scene transitions, late joins, authority handoffs, cache and generation/revision behavior before expanding. Test movement, HP, attacks and death on both sides.
+4. **Read-only building-block inventory and incremental wiring.** Classify ordinary-enemy candidates and variants by actual enemy/behavior classes, movement mechanism (`NPCInputs`, direct transform, physics/path, etc.), animator/controller, sensors/behavior tree, damage/death hooks and prefab/scene dependencies. Distinguish evidence from hypotheses and note unknowns. Favor small opt-in helpers and thin adapters where real enemies prove common behavior; test representative variants rather than mass-registering by class name. The user can research environmental edge cases and place those enemies where needed.
+5. **Validate movement and HP alongside safe lifecycle behavior.** Today registering a handler enables damage/death transport too; the handler contract includes authority, hit reactions and death presentation. If the user wants a genuine movement/HP-only stage before death handling is ready, first propose the explicit gate/contract change and agree on safe semantics. Do not silently enable incomplete death or disable gameplay. Death **presentation remains per-enemy/per-adapter**, never generalized.
 
-PR #3 ("WheelCarrier riposte/execution desync") merged. The commits that matter, oldest first:
+T4 bosses and scripted enemies remain out of scope. No speculative tier hierarchy or capability registry without a demonstrated need. Keep the scene-host, per-spawned-instance tracking model; avoid a broad sync redesign.
 
-| commit | what it did |
-|---|---|
-| `110792b` | unified the mirrored death presentation (clear `GotParry` first, `IsStunt`/layer restore, then hide/restore sprite + `Death()`, then `ClearSpecialState`) |
-| `a84495f` | made the execution clone draw what vanilla draws: only the serialized `interactorAnimator` is triggered, prompt art hidden, `InputNotifier` disabled, clone retired when the clip leaves its state |
-| `93b3ec5` | mirrored **executionable** state gets its own presentation (the prefab's `WheelCarrier_stun` loop behind a hidden enemy), clone lifetime split into executionable vs finisher, finisher reuses the same clone, `completedExecution` gate, executor's **remote avatar** hidden for the finisher |
-| `e37fea6` | the hidden avatar stays hidden through `ApplySkinTexture` (`SetPresentationVisible` + `presentationHidden`) |
-| `332914c` | compile fix: `Penitent` lives in `Gameplay.GameControllers.Penitent`, not in a nested namespace |
-| `58a223a` | `EnemyTierProbe` — one diagnostic line per enemy type per scene |
-| `2c287d8` | same probe, variant-aware (prefab/animator/execution/life/stunt signature, not behaviour type) |
-| `dcf1512` | merge fix: the probe was missing `using UnityEngine;` (it uses `Time` and `GetInstanceID`) |
+## Open issues / boundaries
 
-Tester-confirmed timeline (observer `Astroprof` watching `Cracky`'s WheelCarrier `-20954`, one run):
+- **WheelCarrier blink:** user sees an apparent one-frame stagger/blink after death on P1. Enemy death still synchronizes. It is low priority; source object and cause are unknown, and whether the side fix affected it was not reported. Do not assume it was fixed. Investigate separately using the existing opt-in probe or frame-by-frame evidence; do not guess at death lifecycle behavior.
+- The user explicitly dropped HP-label drift while Wax submerges; it is a debug visual aid. Do not investigate that drift.
+- Wax graph wakes through a Penitent-tagged hearing-sensor `TriggerStay` and calls `LookAtTarget` then `Rise()`. The helper's direct Wax wake policy currently gates on visual sensing; heard-but-not-seen parity is not established. Don't change it speculatively.
+- Wax animator state has `Appear → Crawling` and `Crawling → Disappear` on `HIDE`; `Disappear` has no outgoing transition. Follower uses direct `Animator.Play("Disappear", 0, 0f)` rather than `Hide()`; stale-trigger changes alone did not solve the actual offscreen-culling issue.
 
-```
-57.023 state-2 report received
-57.033 Executionable presentation created … prompt=Interactable Animation, interactor=Left Interactor Animation
-58.541 execution report
-58.547 Hiding executor avatar owner=Cracky, wasEnabled=True
-58.548 Execution presentation started … reused=1.518s        ← one object, both phases
-58.556 authoritative death, completedExecution=True, sprite=False
-61.797 Execution presentation ended … reason=execution clip ended, aliveFor=3.259
-61.799 Restored executor avatar owner=Cracky, reason=execution clip ended
-61.898 Execution clone gone
-```
+## Current architecture and files on `main`
 
-Executor side (`Astroprof` on its own `SPAWN (16)` at 75.115): `local Penitent sprite true->false … onExecution=True`
-at 75.130, back to `true` at 78.311. Vanilla's local hide path was never touched.
+- `Blasphemous.Multiplayer.Client/ProgressSync/EnemySyncManager.cs` — registration table and attachment gate.
+- `EnemySync.cs` — generic scene authority, identity, snapshots/interpolation, target selection and main animator culling policy.
+- `EnemySyncHandler.cs` — adapter contract, including explicit authority, snapshot, hit and death hooks.
+- `FoolEnemySyncHandler.cs`, `WheelCarrierEnemySyncHandler.cs`, `WaxCrawlerEnemySyncHandler.cs` — enemy-specific translations and presentation.
+- `EnemyRemotePerception.cs` — per-handler remote-puppet sensor tests, sight/hearing field drive, sensor-list mirroring and cleanup.
+- `EnemyDeathSyncManager.cs` — spawn identity, generation/revision, damage/death transport; be cautious with lifecycle changes.
+- `EnemyDiagnostics.cs`, `EnemyTierProbe.cs`, `WheelCarrierVisualProbe.cs`, `Players/PenitentVisibilityProbe.cs` — opt-in diagnostics. `WheelCarrierVisualProbe.DescribeClip` is also used functionally for presentation cleanup and must not be disabled with the visual logger.
+- `docs/WAX_PERCEPTION_HANDOFF.md`, `docs/WHEELCARRIER_EXECUTION_CHAIN.md`, `docs/WHEELCARRIER_RIPOSTE_DESYNC.md` — historical detail; current code and this handoff supersede old proposed architectures.
 
-Both original symptoms are gone: the observer enters the executionable state when the **timed attack** lands, not
-when the owner presses E/Y, and the executor is not drawn next to the victim during the finisher.
+## Collaboration, testing and tooling
 
----
-
-## 2. Repo map
-
-| file | lines | role |
-|---|---|---|
-| `ProgressSync/EnemySync.cs` | 305 | engine: per-scene authority election, snapshot publish/interpolate, identity refresh, commitment. Nothing per-enemy. **Do not change** in step 1. |
-| `ProgressSync/EnemySyncManager.cs` | 73 | discovery + hardcoded `is` chains in `Supports()`/`Attach()` + probe hook. This is the registration table target. |
-| `ProgressSync/EnemySyncHandler.cs` | 48 | abstract contract (attach, `OnSyncUpdate`, `OnAuthorityContextChanged`, `SpecialState`, `ApplySpecialState`, `OwnsUnattributedDeath`, abstract presentation/hit/death methods). |
-| `ProgressSync/FoolEnemySyncHandler.cs` | 72 | **already an adapter in all but name** — pure gameplay translation, no presentation state. |
-| `ProgressSync/WheelCarrierEnemySyncHandler.cs` | 1316 | the tier-3 implementation + WheelCarrier specifics + Harmony patches + diagnostics. Target of the split. |
-| `ProgressSync/EnemyDeathSyncManager.cs` | 1011 | authoritative death propagation, spawn identity/generation, per-enemy death hooks. **Fragile, leave alone** unless the refactor forces a signature change. |
-| `ProgressSync/EnemyTierProbe.cs` | 206 | `[EnemyTierDiag]` inventory probe (diagnostic only). |
-| `Players/PenitentVisibilityProbe.cs` | 68 | `[PenitentVisibilityDiag]` local Penitent renderer/damage-area transitions. |
-| `ProgressSync/WheelCarrierVisualProbe.cs` | 111 | renderer/animator dumps for the enemy + clone (`[WheelCarrierVisualDiag]`). |
-| `docs/WHEELCARRIER_EXECUTION_CHAIN.md` | §1–§14 | the how and why of the execution chain, including §13/§14 for the clone work. |
-| `docs/WHEELCARRIER_RIPOSTE_DESYNC.md` | 371 | the original symptom diagnosis (D1–D5) and the review follow-ups. |
-| `ProgressSync/WheelCarrierRemotePlayerVisionPatch.cs` | 74 | makes the WheelCarrier see the remote player; per-enemy, stays per-enemy. |
-
----
-
-## 3. Vanilla facts — do not re-derive these
-
-All paths are relative to the decompiled tree (`/tmp/au/Assemblies-Unity-Games-main/Blasphemous`, see §10).
-
-**The execution chain (one pass, for any executable enemy):**
-
-1. `Tools.Level/Interactable.cs` `Use()` → `Tools.Level.Interactables/Execution.cs` `OnUse()`:
-   `interactableAnimator.gameObject.SetActive(false)` (prompt art off) → `ShowPlayer(false)` →
-   `ExecutedEntity.KillEntity()` → `interactorAnimator.SetTrigger("USED")` → waits for `Consumed` → destroys.
-2. `Interactable.ShowPlayer(bool)` (≈ line 492) is the whole implementation:
-   `Core.Logic.Penitent.SpriteRenderer.enabled = show; Core.Logic.Penitent.DamageArea.enabled = show;`
-   It only ever touches the **local** Penitent — the remote avatar must be handled by us (`SetPresentationVisible`).
-3. `Execution.OnStart` schedules `TriggerAwareness` at 0.2 s and `ShowTutorial` at 0.6 s, so `ExecutedEntity`
-   must be set on our clone even though `Execution` is disabled.
-
-**The executable tier is already factored by vanilla:**
-
-- `Gameplay.GameControllers.Enemies.Framework.IA/EnemyBehaviour.cs:327-345` — `Parry()`, `Alive()`, `Execution()` are
-  `virtual` on the shared base; the base bodies only set/clear `Entity.IsStunt`.
-- **16** enemy behaviours override `Execution()`, and **16/16** call `base.Execution()`, call
-  `EntExecution.InstantiateExecution()` once, and implement `Alive()` as the exact inverse
-  (layer → `Enemy`, sprite on, `CurrentLife = Stats.Life.Base / 2`, restart behaviour, `EntExecution.enabled = false`).
-  List: Acolyte, Bishop, CrossCrawler, Flagellant, FlyingPortrait, Menina, NewFlagellant, Nun, RangedBoomerang,
-  AxeRoller, Roller, Runner, ShieldMaiden, ViciousDasher, WalkingTomb, WheelCarrier.
-- `EnemyBehaviour.GotParry` (line 42) and `Enemy.IsStunt` (`Enemy.cs:96`) are shared; `Enemy.StuntTime` is a public
-  field, default `5f` (`Enemy.cs:68`).
-- `StuntBehaviour` (`Gameplay.GameControllers.AnimationBehaviours.Enemies.Stunt`) is **one** class, no subclasses.
-  Its `OnStateUpdate` calls `Alive()` + `Destroy` — this is why a mirrored path must never route into it.
-- `Gameplay.GameControllers.Combat/EntityExecution.cs` is a `Trait` (`Trait : MonoBehaviour`) on the enemy GameObject,
-  exposing `ExecutionPrefab` and `InstantiateExecution()` (which sets `ExecutedEntity` and flips the prompt sprite).
-  `enemy.GetComponent<EntityExecution>()` works for all 16 — no need for each enemy's `EntExecution` property.
-- Vanilla swaps the enemy to layer `Default` in `Execution()` and back to `Enemy` in `Alive()`. Copy that verbatim;
-  do not maintain a parallel mechanism.
-
-**Other facts learned the hard way:**
-
-- `Entity.Stats` is a public **field** initialised inline (`Entity.cs:47`), so it is never null, but `Stats.Life` can be.
-- `VariableAttribute` (base of `Life`) has **no public `Base`** — use `CurrentMax`. Vanilla's `Alive()` uses
-  `Stats.Life.Base` internally, which is why assuming it from outside fails to compile.
-- `Enemy.EnemyAttack()` is an abstract method returning `EnemyAttack : Attack : Trait : MonoBehaviour` → `.enabled` is valid.
-- `EntityExecution` is in `Gameplay.GameControllers.Combat`; `Penitent` is `Gameplay.GameControllers.Penitent.Penitent`.
-- **71** classes derive from `EnemyBehaviour` in this decompile; **only 16** override `Execution()`. The
-  non-executable surface (T1/T2, bosses included) is therefore the large one — see §4.
-
----
-
-## 4. The agreed plan (CGPT signed off on the direction)
-
-Reviewer's conditions, verbatim in intent: keep the adapter contract **small**, prefer a **variant-aware** probe,
-treat T2 as an **experiment with one representative enemy**, test T3 **interruptions**, and add complexity only when
-a real enemy demonstrates the need. The full exchange is PR #3 comments `-6642837924` (proposal) and `-6643197779`
-(answers).
-
-**Four layers:**
-
-| layer | today | after |
-|---|---|---|
-| `EnemySyncManager` | hardcoded `is` chains | registration table `enemyType → handler kind + adapter` |
-| `EnemySync` | engine | unchanged |
-| `EnemySyncHandler` | one implementation per enemy | **tier policy**: `SimpleEnemySyncHandler` (Fool) / `ExecutableEnemySyncHandler` (WheelCarrier + the other 15) |
-| `EnemyAdapter` | does not exist (Fool fills the role) | per-enemy translation, ~40–70 lines |
-
-**Minimal adapter contract — only what already differs between Fool and WheelCarrier:**
-
-`IsWalking`, `SetAuthority(bool)`, `SetTarget(GameObject)`, `ApplySnapshot`, `ApplyHit`,
-`ApplyDamageReaction(bool dead, byte orientation)`, `ApplyDeath`, plus T3-only
-`ApplyParryPresentation`, `HideForExecution`, `RestoreAlive`.
-
-Nothing speculative: no capability registry, no tier-numbered types, no virtuals added "for later".
-
-**Tiers are capability flags, not difficulty:**
-
-- **T1 snapshot** — `Fool`. Generic path only. Done.
-- **T2 special non-execution states** — attack windups, flying, teleport, shields. **Undesigned and not uniform.**
-  Candidates: `WallEnemyBehaviour` (stationary turret, cheap) and `ExplodingEnemyBehaviour` (fuse — the case where an
-  invisible state corrupts the other player's damage prediction). Both are plain `EnemyBehaviour` subclasses
-  overriding `Idle/Wander/Chase/Attack/Damage` with **no** `Execution()` override, so they are T2 by construction.
-- **T3 executable** — one implementation, the 16 above. Packet 25 (`state`, `side` + scene/spawn/generation/epoch)
-  already fits; **no protocol change**. `VERSION = 15` at the time of writing.
-- **T4 scripted/boss** — out of scope.
-
-**Extraction order (each step separately reviewable):**
-
-1. `EnemyAdapter` + move Fool and WheelCarrier behind it. **Acceptance: identical diagnostic output** on an
-   identical run while `WheelCarrierEnemySyncHandler.cs` shrinks to an adapter. No new enemies, no behaviour change.
-2. Replace the `is` chains with the registration table.
-3. Add **one** new executable enemy as adapter + table row only. If it needs a change to the generic handler,
-   the abstraction is wrong — change the abstraction, not the enemy.
-4. Delete the per-enemy handler file.
-5. Then T2, with the turret or the fuse.
-
-**Guardrails:**
-
-- The mirrored path never calls `Alive()` (it resets `CurrentLife` and restarts AI — banned for non-owners since
-  review `6635844726`), and never routes into `StuntBehaviour.OnStateUpdate`.
-- No new timers. The only one in the current code (`ExecutionablePresentationMaxLifetime = 15f`) is a **clone leak
-  guard**, not a recovery path, and must stay that way.
-- Keep existing diagnostic tags; add `enemy=<Type>` as a field instead of renaming them.
-- Do not touch damage reconciliation, state-2 collision protection, authoritative death propagation, or
-  `EnemyDeathSyncManager` identity/generation logic.
-
----
-
-## 5. Invariants from the merge (do not "clean up")
-
-These look redundant and are not:
-
-- **Two events, not one.** The timed attack creates the executionable state (mirror state 2); the owner's E/Y press
-  starts the finisher. They arrive separately and the presentation has two lifetimes.
-- **`completedExecution` = clone exists *and* finisher started.** A death with an unfired clone is an interrupted
-  death and must show the ordinary death clip.
-- **`GotParry` is cleared first** in death cleanup, before `Death()`, otherwise `WheelCarrierAnimatorInyector.OnUpdate`
-  re-writes `IS_PARRIED` every frame and the death clip can never take over.
-- **The enemy's own sprite stays disabled** behind the clone in both phases; after a completed execution it stays
-  disabled for the rest of the level (see §8).
-- **The prompt art is part of the presentation.** `Interactable Animation` playing `WheelCarrier_stun` *is* the
-  executionable look; it is only hidden when the finisher starts.
-- **One interactor animator.** The prefab carries `Left` and `Right Interactor Animation`; trigger only the serialized
-  `interactorAnimator` (read via `AccessTools.Field(typeof(Tools.Level.Interactable), "interactorAnimator")`).
-- **Avatar hiding is tracked implicitly** by `_hiddenExecutionAvatar` being non-null; every clone exit path funnels
-  through `DestroyExecutionPresentation`, which is what restores it.
-
----
-
-## 6. First actions in the next session
-
-1. **Read the merged code, not memory.** In particular `WheelCarrierEnemySyncHandler.cs` on the new base (1316 lines)
-   and `EnemyTierProbe.cs` (it now has `using UnityEngine;` — do not "fix" it again).
-2. **Probe play-test.** `D01Z01S01` + a couple of neighbouring rooms, grep `[EnemyTierDiag]` only.
-   Acceptance: separate `variant=Tutorial` and `variant=Regular` lines for the WheelCarriers, one line per variant,
-   plus whatever new types are met. That inventory is the adapter surface's source of truth — do not write the
-   adapter from the 16-type list alone.
-3. **Step 1 of the split** (§4), with the log-parity acceptance criterion. Keep `WheelCarrierVisualProbe` out of the
-   generic handler — it is WheelCarrier-specific instrumentation and may be deleted once the tier work is trusted.
-4. Only then the registration table, then the third enemy.
-
----
-
-## 7. T3 interruption matrix (test cases, not design work)
-
-| case | path that must run |
-|---|---|
-| scene change while executionable | `TearDownExecutionablePresentation` → `DestroyExecutionPresentation` (no avatar hide to undo) |
-| scene change during the finisher | `DestroyExecutionPresentation("sync handler destroyed")` → `RestoreExecutionOwnerAvatar` with the avatar already gone |
-| owner disconnect while executionable | mirror owner left → teardown, enemy drawn again, no clone leak |
-| owner disconnect during the finisher | avatar restore must not throw on a missing handle |
-| authority change (epoch bump) in either phase | `OnAuthorityContextChanged` → presentation retired before the new authority's snapshots apply |
-| death mid-finisher | `completedExecution=True`, clone plays out, avatar restored at clip end |
-| death mid-executionable | `completedExecution=False`, `"death without a finisher"`, enemy sprite back for the death clip |
-
-Hardest one: **authority change during the finisher** — `_hiddenExecutionAvatar` is per-handler state and must be
-cleared exactly once, and there may be no avatar left to restore.
-
-Also still unverified: an execution longer than the observed ~3.3 s (all evidence so far is 3.26 s), and the ordinary
-damage/death path after the refactor (must still report `completedExecution=False`).
-
----
-
-## 8. Known gaps and deliberate leftovers
-
-- The observer keeps the enemy GameObject alive but invisible after a completed execution (sprite off, attack off,
-  layer `Enemy`, `dead=True`, animator still cycling `WheelCarrier_idle`). Vanilla only destroys the enemy on the
-  owner's side; the clone is the shared presentation. Destroying it would mean touching the spawn registry — left to
-  scene unload on purpose.
-- The executor's **nametag** still floats at their position during the finisher (body hidden, label not). Cosmetic,
-  untouched, needs `OtherPlayerManager` nametag lookup if wanted.
-- The post-death renderer watch logs every idle frame change for its bounded window (~8 s). Noise only.
-- T2 byte-range for special states is **not reserved** yet: players already use 240–249 for special animations, and
-  packet 25 states 1/2 are taken by parry/execution. Decide the range before the first T2 enemy.
-- `EnemySyncManager.Supports()` is the single place that decides who is synced; anything added there immediately
-  affects death propagation and identity/generation, not just presentation.
-
----
-
-## 9. Log triage conventions
-
-One file per client, **complete lines** (trimmed columns cost a whole test round once). Regex used in Notepad++:
-
-```
-\[(WheelCarrierExecutionDiag|WheelCarrierStateDiag|WheelCarrierVisualDiag|PenitentVisibilityDiag|EnemySyncDiag|EnemyTierDiag)\]
-```
-
-Rules that were agreed with the reviewer and tester:
-
-- Never compare `time=` values **across** the two clients; only within one log.
-- `[SharedDiagMerged]` lines are the same events relayed through the collector — deduplicate by `session/sourceSeq`
-  before counting anything.
-- Absence of a line in an excerpt is not proof of absence — the logs contain queue-drop diagnostics; ask for the
-  complete log before concluding.
-- Retracted evidence: `ExecutionDupeLogOutput.log`, `P2ExecutionDupeLogOutput.log` (they contained duplicate-test
-  artefacts). Do not cite them.
-- For a first-pass triage, `[EnemyTierDiag]` needs no cross-client correlation at all — it is inventory, not timing.
-
----
-
-## 10. Sandbox / tooling notes (for me, next session)
-
-- **No `dotnet`, `csc` or `mcs`.** Compilation must be verified by the user. Syntax check with tree-sitter:
-
-  ```bash
-  python3 -m venv /tmp/venv && /tmp/venv/bin/pip install -q tree_sitter tree_sitter_c_sharp
-  /tmp/venv/bin/python -c "..."   # parse each changed file, walk for ERROR/is_missing nodes, expect 0
-  ```
-
-- **Decompiled vanilla** (re-fetch; `/tmp` is wiped between sessions):
-
-  ```bash
-  curl -sL https://codeload.github.com/EKQRCalamity/Assemblies-Unity-Games/tar.gz/refs/heads/main -o /tmp/au.tgz
-  mkdir -p /tmp/au && tar xzf /tmp/au.tgz -C /tmp/au    # → /tmp/au/Assemblies-Unity-Games-main/Blasphemous
-  ```
-
-  `raw.githubusercontent.com` is **blocked**; use the tarball or `https://api.github.com/repos/…/git/blobs/<sha>`.
-- **Encoding:** several files start with `EF BB BF`. Reading with `encoding='utf-8'` keeps the BOM as `\ufeff` and
-  writing back as `utf-8` preserves it; `utf-8-sig` **adds** one. Read/write bytes if unsure. Never re-save a file
-  through a tool that strips it without checking `git diff` for a line-1 change.
-- **`xxd` is absent** — use `od -An -tx1`.
-- **`gh pr edit` fails** — use `gh api -X PATCH repos/…/pulls/N --input body.json`.
-- **Push failures:** if the remote moved, `git reset --mixed origin/<branch>` (keeps edits), then re-commit.
-  Never `git checkout --` a file with unmerged work.
-- **Unity/API compile traps already hit:** `Stats.Life.Base` does not exist publicly (use `CurrentMax`);
-  `Penitent` namespace; missing `using UnityEngine;` in a file that uses `Time`/`GetInstanceID` (this is exactly what
-  `dcf1512` fixed). Copy the using block from a neighbouring file in the same folder before writing a new one.
-- **Always verify a claimed API before using it** (`grep` the decompiled tree for the member), because a wrong guess
-  costs the user a build round-trip.
-
----
-
-## 11. Dead ends — do not retry
-
-- Timeout-based presentation recovery; `MirrorTimeout` auto-restore; "restore from elapsed time alone".
-- Routing a mirrored state into `StuntBehaviour.OnStateUpdate`, or calling `Parry()/Execution()/Alive()` on a non-owner.
-- Patching `Execution.OnUse` (iterator) — patch `Tools.Level.Interactable.Use()` instead; and never call `Execution.OnUse`
-  on the clone.
-- Triggering every animator that declares `USED` (two overlapping bodies).
-- Reading JSON config at plugin start / `ApplyBackgroundExecution()` — `runInBackground` uses BepInEx config, bound at
-  the earliest callback, separate commit.
-- Probe keys without the component kind (the `Animator` entry overwrote the `SpriteRenderer` entry).
-- Treating `AnimatorStateInfo.normalizedTime >= 1` as reliable for the interactor animator (it leaves to `clip=null`
-  instead) — retirement is gated on the state leaving, guarded by an "entered once" flag.
-- Assuming "the parried pose" is acceptable for state 2 — that was the whole bug.
-- Reading `sprite=False` as "nothing can be drawn" (it covers only `WheelCarrier.SpriteRenderer.enabled`).
-- Global unattributed-death reporting; blanket widening of `LocalOwnershipGrace`; blanket `EnemySyncManager.Attach` guard.
-
----
-
-## 12. Evidence index
-
-- `docs/WHEELCARRIER_EXECUTION_CHAIN.md` — §1–§12 the chain itself, §13 clone presentation fixes, §14 executionable
-  presentation + avatar hiding. Read §13/§14 before changing anything in the clone lifecycle.
-- `docs/WHEELCARRIER_RIPOSTE_DESYNC.md` — original diagnosis D1–D5, the review follow-ups (timeout removal, death-hook
-  lifecycle, duplicate/remote-induced reports, ownership-grace finding).
-- PR #3 comments worth re-reading: `-6635844726` (death cleanup rules), `-6640296831` (config binding),
-  `-6641432267`/`-6642127315` (state-2 lifetime evidence, avatar hiding plan), `-6642368198` (the verified timeline),
-  `-6642837924` (proposal), `-6643197779` (agreed plan + minimal adapter contract + interruption matrix).
-- Tester runs referenced throughout: `-20956` (never executed), `-21232` (execution, pre-`a84495f`), and the final
-  verified run summarised in §1.
+- The user relays messages to/from CGPT in chat; do not use the PR for relay unless asked. User asked to document actions/decisions on the PR for the completed phase; follow current instructions for future documentation. Both reviewers share one account, so do not infer authorship from the GitHub account alone.
+- User prefers one step at a time, without overcomplication. Don't label a feature tested unless the user has actually validated the relevant case.
+- No .NET compiler was available in the previous sandbox; tree-sitter C# parsing and `git diff --check` are syntax/static checks, **not a build**. The user builds/tests in game. Check current environment rather than assuming.
+- Decompiled reference: `EKQRCalamity/Assemblies-Unity-Games` on GitHub, `Blasphemous/` directory. Fetch from GitHub/codeload or `gh api`; `/tmp` does not persist reliably. Verify game API names before coding.
+- The user may create a separate private GitHub repository for extracted game prefab references, accessible through their connected account. It has not yet been created or provided; ask for its location when ready. Keep extracted game assets out of the public multiplayer repository. Text exports are useful for inspection but are not necessarily runtime-loadable Unity prefabs; prefer retrieving actual prefabs from the installed game.
+- A search of The Cutting Room Floor found no documented original Blasphemous debug room; this is not proof that none exists. `BrandenEK/Blasphemous.DebugMod` documents scene/position display, hitbox viewer, noclip and free camera, but no spawner in its README; multiplayer compatibility and save effects are unverified.
+- `[SharedDiagMerged]` entries relay the same events: deduplicate by session/source sequence and segment by session/epoch before counting. Logs may be trimmed and snapshot diagnostics gated; missing lines are not proof of absence.
+- Avoid simultaneous edits to the same file (prior parallel edits lost work). Post Markdown PR bodies from a file to prevent shell backtick substitution.
+- Do not reintroduce timeout-based mirror auto-recovery, call native `Parry`/`Execution`/`Alive` on a non-owner, patch the `Execution.OnUse` iterator, or trigger every animator declaring `USED`. See the WheelCarrier execution-chain document for why.

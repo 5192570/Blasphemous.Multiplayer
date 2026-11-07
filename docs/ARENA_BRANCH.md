@@ -16,7 +16,7 @@ The handoff is planning and investigation guidance. It does not implement a spaw
 ## Status and use
 
 - This is the latest handoff among the Arena hash-named branches.
-- The branch is 28 commits behind `main` and carries three commits ahead of it, all related to the handoff update. Merge it only to bring the current handoff documentation onto `main`.
+- The branch is 28 commits behind `main` and carries four commits ahead of it, all related to the handoff update. Merge it only to bring the current handoff documentation onto `main`.
 - Continue implementation from the latest `main` after the handoff is integrated.
 - Follow the handoff's explicit boundary: investigate first, propose the smallest Fool-only prototype, and obtain agreement before coding.
 

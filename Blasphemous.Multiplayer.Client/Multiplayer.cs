@@ -83,6 +83,7 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
     protected override void OnRegisterServices(ModServiceProvider provider)
     {
         provider.RegisterCommand(new MultiplayerCommand());
+        provider.RegisterCommand(new SpawnCommand());
     }
 
     public void OnConnect(string ipAddress, string playerName, string password)

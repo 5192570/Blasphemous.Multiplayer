@@ -1,4 +1,5 @@
 using Blasphemous.ModdingAPI;
+using Framework.Audio;
 using Framework.Managers;
 using Gameplay.GameControllers.Enemies.Fool;
 using Gameplay.GameControllers.Enemies.Framework.IA;
@@ -49,6 +50,7 @@ internal static class DebugEnemySpawner
         try
         {
             LevelInitializer currentLevel = Core.Logic.CurrentLevelConfig;
+            int audioCatalogs = RegisterFoolAudioCatalogs();
             instance = UnityEngine.Object.Instantiate(prefab, position, Quaternion.identity);
             instance.transform.parent = currentLevel.transform;
 
@@ -70,7 +72,7 @@ internal static class DebugEnemySpawner
 
             string sceneName = Core.LevelManager.currentLevel == null ? currentLevel.name : Core.LevelManager.currentLevel.LevelName;
             message = $"Spawned debug Fool at {fool.transform.position} in {sceneName}.";
-            ModLog.Info($"[DebugEnemySpawner] {message} prefabInstance={prefab.GetInstanceID()}, enemyInstance={fool.GetInstanceID()}");
+            ModLog.Info($"[DebugEnemySpawner] {message} prefabInstance={prefab.GetInstanceID()}, enemyInstance={fool.GetInstanceID()}, audioCatalogs={audioCatalogs}");
             return true;
         }
         catch (Exception ex)
@@ -80,5 +82,29 @@ internal static class DebugEnemySpawner
             message = "Failed to spawn the debug Fool. See the mod log for details.";
             return false;
         }
+    }
+
+    private static int RegisterFoolAudioCatalogs()
+    {
+        if (Core.Audio.EnemiesAudioCatalogs == null) return 0;
+
+        // Scene AudioLoader discovers this catalog from authored spawn points. Reproduce its
+        // exact-type selection for this debug enemy without modifying the scene or its loader.
+        foreach (FMODAudioCatalog catalog in Core.Audio.EnemiesAudioCatalogs)
+        {
+            if (catalog == null || catalog.Owner == null || catalog.Owner.GetType() != typeof(Fool)) continue;
+
+            Core.Audio.RegisterCatalog(catalog);
+            int registered = 1;
+            if (catalog.HasAssociatedCatalog && catalog.AssociatedCatalog != null)
+            {
+                Core.Audio.RegisterCatalog(catalog.AssociatedCatalog);
+                registered++;
+            }
+            return registered;
+        }
+
+        ModLog.Warn("[DebugEnemySpawner] No loaded FMOD catalog is owned by Fool.");
+        return 0;
     }
 }

@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-The current implementation is a **single-player debug prototype** on PR [#6](https://github.com/5192570/Blasphemous.Multiplayer/pull/6). It supports the ordinary Fool only. WheelCarrier spawning and multiplayer coordination are not implemented in this phase.
+The current implementation is a **single-player debug prototype** on PR [#6](https://github.com/5192570/Blasphemous.Multiplayer/pull/6). It has explicit targets for the ordinary Fool and WheelCarrier. Fool spawning is user-validated; WheelCarrier spawning is implemented but still awaits runtime validation. Multiplayer coordination is not implemented in this phase.
 
 The commands use the installed game's real prefab and FMOD catalog assets. They do not bundle extracted assets, load donor scenes, or parse `sharedassets*.assets` / `resources.assets` directly.
 
@@ -14,6 +14,8 @@ The commands use the installed game's real prefab and FMOD catalog assets. They 
 | `spawn probe` | Reports loaded enemy-prefab sources and retained cache references without spawning or modifying anything. |
 | `spawn fool -relative center` | Spawns a Fool at the world position corresponding to the center of the current game camera view. |
 | `spawn fool -scene x y` | Spawns a Fool at explicit scene/world coordinates. Z is set to `0`. |
+| `spawn wheelcarrier -relative center` | Spawns a WheelCarrier at the world position corresponding to the center of the current game camera view. |
+| `spawn wheelcarrier -scene x y` | Spawns a WheelCarrier at explicit scene/world coordinates. Z is set to `0`. |
 
 Coordinates use invariant numeric format: use `.` as the decimal separator and do not include thousands separators. Invalid, NaN, and infinite coordinates are rejected.
 
@@ -31,7 +33,14 @@ Debug spawning requires an active gameplay scene and refuses to run while connec
 
 ### Exact prefab selection
 
-`fool` means prefab **`Fool`** with enemy ID **`EV11`**. Selection checks both values and does not select the first C# `Fool` component match. This excludes `FoolDemake` (`EV_DMK02`), which uses the same component class.
+Each target checks both an exact prefab name and enemy ID rather than selecting the first matching C# component:
+
+| Command | Prefab | Enemy ID |
+| --- | --- | --- |
+| `fool` | `Fool` | `EV11` |
+| `wheelcarrier` | `WheelCarrier` | `EV10` |
+
+This excludes `FoolDemake` (`EV_DMK02`), which uses the same component class as the ordinary Fool. The direct lifecycle and audio wrapper uses the base `Enemy` type and the selected prefab's runtime enemy type; target-specific code only supplies the exact prefab name and enemy ID.
 
 Prefab resolution uses, in order:
 
@@ -66,7 +75,7 @@ Direct prefab instantiation alone initially produced errors for `FoolFootStep` a
 
 The game's scene `AudioLoader` registers enemy audio catalogs only for enemy types referenced by that scene's authored spawn points. `D01Z02S01` has no active spawn points, so its normal loader had no reason to register Fool audio.
 
-Before instantiation, the debug wrapper now finds the first loaded `Core.Audio.EnemiesAudioCatalogs` entry whose owner type is exactly `Fool`, matching native `AudioLoader` selection. It registers that catalog and its associated catalog through the native, idempotent `Core.Audio.RegisterCatalog` API. It does not substitute sound paths or create replacement audio events.
+Before instantiation, the debug wrapper finds the exact-ID `Enemy` on the selected prefab and uses its runtime class to select the first matching loaded `Core.Audio.EnemiesAudioCatalogs` entry, matching native `AudioLoader` selection. It registers that catalog and its associated catalog through the native, idempotent `Core.Audio.RegisterCatalog` API. It does not substitute sound paths or create replacement audio events. This generic path is validated for Fool; WheelCarrier audio still requires its own runtime check.
 
 ## User-validated runtime behavior
 
@@ -94,11 +103,13 @@ Explicit coordinates have the same limitation. Use known safe positions, such as
 
 - `Blasphemous.Multiplayer.Client/SpawnCommand.cs` — console parsing, camera-center conversion, and command help.
 - `Blasphemous.Multiplayer.Client/ProgressSync/EnemyPrefabCatalog.cs` — exact prefab/ID resolution and validated reference cache.
-- `Blasphemous.Multiplayer.Client/ProgressSync/DebugEnemySpawner.cs` — offline guard, direct lifecycle wrapper, and native Fool audio registration.
+- `Blasphemous.Multiplayer.Client/ProgressSync/DebugEnemySpawner.cs` — explicit target prefab/ID pairs, offline guard, generic direct lifecycle wrapper, and native audio registration by runtime enemy type.
 - `Blasphemous.Multiplayer.Client/ProgressSync/EnemyPrefabProbe.cs` — read-only asset/cache diagnostics.
 
 ## Next phase
 
-The next proposed implementation is WheelCarrier (`WheelCarrier`, `EV10`) using the same narrow offline pattern, followed by its own movement, combat, damage, death, cleanup, audio, transition, and Prie Dieu checks. Do not infer WheelCarrier runtime success from the prefab probe alone.
+WheelCarrier (`WheelCarrier`, `EV10`) is implemented through the generic wrapper and needs its own placement, movement, combat, execution, damage, death, cleanup, audio, transition, and Prie Dieu checks. Also rerun one Fool spawn to check that the generic refactor preserved its validated behavior. Do not infer WheelCarrier runtime success from the prefab probe or implementation alone.
+
+After WheelCarrier validation, add further non-boss enemies one at a time, with exact prefab/ID selection and focused runtime checks. A target being non-boss or using the generic wrapper does not establish that it is self-contained.
 
 Multiplayer coordination remains a separate future design task. Current scene spawn-point identity is not sufficient to make independent local debug instances match across clients.

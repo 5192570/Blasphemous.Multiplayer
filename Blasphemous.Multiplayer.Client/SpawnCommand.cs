@@ -13,6 +13,8 @@ namespace Blasphemous.Multiplayer.Client;
 /// </summary>
 public sealed class SpawnCommand : ModCommand
 {
+    private delegate bool SpawnEnemy(Vector3 position, out string message);
+
     protected override string CommandName => "spawn";
 
     protected override bool AllowUppercase => false;
@@ -24,6 +26,7 @@ public sealed class SpawnCommand : ModCommand
             { "help", Help },
             { "probe", Probe },
             { "fool", Fool },
+            { "wheelcarrier", WheelCarrier },
         };
     }
 
@@ -33,6 +36,8 @@ public sealed class SpawnCommand : ModCommand
 
         Write("spawn fool -relative center: Spawn a debug Fool at the center of the current camera view");
         Write("spawn fool -scene x y: Spawn a debug Fool at scene/world coordinates");
+        Write("spawn wheelcarrier -relative center: Spawn a debug WheelCarrier at the center of the current camera view");
+        Write("spawn wheelcarrier -scene x y: Spawn a debug WheelCarrier at scene/world coordinates");
         Write("spawn probe: Inspect loaded enemy prefab sources without spawning or modifying anything");
         Write("Debug enemy spawning is currently single-player only");
     }
@@ -45,6 +50,16 @@ public sealed class SpawnCommand : ModCommand
     }
 
     private void Fool(string[] parameters)
+    {
+        Spawn(parameters, "fool", DebugEnemySpawner.TrySpawnFool);
+    }
+
+    private void WheelCarrier(string[] parameters)
+    {
+        Spawn(parameters, "wheelcarrier", DebugEnemySpawner.TrySpawnWheelCarrier);
+    }
+
+    private void Spawn(string[] parameters, string enemyName, SpawnEnemy spawnEnemy)
     {
         Vector3 position;
 
@@ -63,12 +78,12 @@ public sealed class SpawnCommand : ModCommand
         }
         else
         {
-            Write("Usage: spawn fool -relative center | spawn fool -scene x y");
-            Write("Coordinates must use invariant numeric format, for example: spawn fool -scene -553.5 12");
+            Write($"Usage: spawn {enemyName} -relative center | spawn {enemyName} -scene x y");
+            Write($"Coordinates must use invariant numeric format, for example: spawn {enemyName} -scene -560 12");
             return;
         }
 
-        DebugEnemySpawner.TrySpawnFool(position, out string message);
+        spawnEnemy(position, out string message);
         Write(message);
     }
 

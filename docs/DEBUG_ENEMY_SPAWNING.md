@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-The current implementation is a **single-player debug prototype** on PR [#6](https://github.com/5192570/Blasphemous.Multiplayer/pull/6). It has explicit targets for the ordinary Fool and WheelCarrier. Fool spawning is user-validated; WheelCarrier spawning is implemented but still awaits runtime validation. Multiplayer coordination is not implemented in this phase.
+The current implementation is a **single-player debug prototype** on PR [#6](https://github.com/5192570/Blasphemous.Multiplayer/pull/6). It has explicit targets for the ordinary Fool and WheelCarrier. Fool spawning and the core WheelCarrier direct-spawn lifecycle are user/log validated. Multiplayer coordination is not implemented in this phase.
 
 The commands use the installed game's real prefab and FMOD catalog assets. They do not bundle extracted assets, load donor scenes, or parse `sharedassets*.assets` / `resources.assets` directly.
 
@@ -75,7 +75,7 @@ Direct prefab instantiation alone initially produced errors for `FoolFootStep` a
 
 The game's scene `AudioLoader` registers enemy audio catalogs only for enemy types referenced by that scene's authored spawn points. `D01Z02S01` has no active spawn points, so its normal loader had no reason to register Fool audio.
 
-Before instantiation, the debug wrapper finds the exact-ID `Enemy` on the selected prefab and uses its runtime class to select the first matching loaded `Core.Audio.EnemiesAudioCatalogs` entry, matching native `AudioLoader` selection. It registers that catalog and its associated catalog through the native, idempotent `Core.Audio.RegisterCatalog` API. It does not substitute sound paths or create replacement audio events. This generic path is validated for Fool; WheelCarrier audio still requires its own runtime check.
+Before instantiation, the debug wrapper finds the exact-ID `Enemy` on the selected prefab and uses its runtime class to select the first matching loaded `Core.Audio.EnemiesAudioCatalogs` entry, matching native `AudioLoader` selection. It registers that catalog and its associated catalog through the native, idempotent `Core.Audio.RegisterCatalog` API. It does not substitute sound paths or create replacement audio events. The generic path selected one catalog for each validated Fool and WheelCarrier spawn. Neither target produced missing-catalog errors in the successful WheelCarrier validation log.
 
 ## User-validated runtime behavior
 
@@ -90,8 +90,16 @@ Before instantiation, the debug wrapper finds the exact-ID `Enemy` on the select
 | Room transition and repeated spawn | The debug Fool did not survive the transition, as intended, and another could be spawned afterward. |
 | Authored spawning | Authored enemies spawned normally on subsequent room loads. |
 | `spawn fool -scene x y` | The user confirmed that explicit scene coordinates work, including the documented `D01Z01S03` example. |
+| Generic Fool regression | After the WheelCarrier/generalization change, Fool spawned with `enemyType=Fool`, `audioCatalogs=1`, took damage, and fired `ENTITY_DEAD`. |
+| WheelCarrier initialization | In `D01Z02S01`, exact cached prefab `36706` spawned with `enemyType=WheelCarrier` and `audioCatalogs=1`; no initialization or missing-catalog errors occurred. |
+| WheelCarrier grounding, movement, and combat | It spawned at `(-524.0, 15.3, 0.0)` and later attacked at ground-level Y=11 with changed X positions. Two native attack hooks and parry events were logged. |
+| WheelCarrier execution and death | The native `ACT_WheelCarrierExecution(Clone)` interaction started and finished, `ENTITY_DEAD` fired, and the native execution achievement flag progressed. |
+| WheelCarrier Prie Dieu | The executed debug WheelCarrier did not respawn; normal Prie Dieu respawn processing ran. |
+| WheelCarrier transition and repeated spawn | A second debug WheelCarrier spawned at `(-539.4, 13.2, 0.0)` in `D01Z01S03`. It did not survive the following room transition, while authored enemies spawned normally on subsequent loads. |
 
-These checks establish a working Fool-only offline sandbox. They are not evidence of multiplayer spawning, WheelCarrier instantiation, every possible Fool sound, or exhaustive terrain/placement safety.
+The log does not record which placement syntax produced the second WheelCarrier spawn, so a separate `spawn wheelcarrier -scene x y` test is not claimed. Offline attack-sync warnings report that an unresolved debug spawn identity cannot send network attacks; the native local attacks still fired, and these warnings are not local initialization failures. Native achievement progression remains enabled as designed.
+
+These checks establish working Fool and WheelCarrier offline sandbox targets. They are not evidence of multiplayer spawning, every possible enemy sound, every WheelCarrier placement form, or exhaustive terrain/placement safety.
 
 ## Placement limitations
 
@@ -108,8 +116,8 @@ Explicit coordinates have the same limitation. Use known safe positions, such as
 
 ## Next phase
 
-WheelCarrier (`WheelCarrier`, `EV10`) is implemented through the generic wrapper and needs its own placement, movement, combat, execution, damage, death, cleanup, audio, transition, and Prie Dieu checks. Also rerun one Fool spawn to check that the generic refactor preserved its validated behavior. Do not infer WheelCarrier runtime success from the prefab probe or implementation alone.
+WheelCarrier (`WheelCarrier`, `EV10`) and the post-refactor Fool regression have passed the documented runtime checks. A distinct WheelCarrier `-scene x y` invocation can still be recorded if desired, although both targets share the same coordinate parser.
 
-After WheelCarrier validation, add further non-boss enemies one at a time, with exact prefab/ID selection and focused runtime checks. A target being non-boss or using the generic wrapper does not establish that it is self-contained.
+Add further non-boss enemies one at a time, with exact prefab/ID selection and focused runtime checks. A target being non-boss or using the generic wrapper does not establish that it is self-contained.
 
 Multiplayer coordination remains a separate future design task. Current scene spawn-point identity is not sufficient to make independent local debug instances match across clients.
